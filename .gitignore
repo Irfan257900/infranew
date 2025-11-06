@@ -1,0 +1,9 @@
+.terraform/
+
+# Terraform state files (NEVER COMMIT THESE)
+*.tfstate
+*.tfstate.*
+
+# Terraform state files (NEVER COMMIT THESE)
+*.tfstate
+*.tfstate.*
