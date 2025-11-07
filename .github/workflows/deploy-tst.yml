@@ -1,0 +1,38 @@
+# This is the "recipe" for GitHub Actions
+
+name: Deploy TST Environment
+
+# This adds a "Run workflow" button to the Actions tab
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    # This tells all steps to run inside your "tst" folder
+    defaults:
+      run:
+        working-directory: ./environments/tst
+
+    steps:
+      - name: Check out the repository code
+        uses: actions/checkout@v3
+
+      - name: Log in to Azure
+        uses: azure/login@v1
+        with:
+          # Uses the JSON secret you created in Step 2
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Plan
+        run: terraform plan -var="vm_admin_password=${{ secrets.VM_ADMIN_PASSWORD }}" -out=tfplan
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
