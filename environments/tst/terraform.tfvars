@@ -12,9 +12,9 @@ key_vault_name               = "Voltica-tst-kv-irfan771" # <-- UPDATED
 dotnet_version               = "8.0"
 log_analytics_workspace_name = "log-Voltica-tst-appinsides"
 function_app_names = [
-  "Voltica-Marketdatatst",
-  "Voltica-Subscribertst",
-  "Voltica-SweepFunapptst",
+  "Voltica-Marketdatatst-irfan771",
+  "Voltica-Subscribertst-irfan771",
+  "Voltica-SweepFunapptst-irfan771",
   # "Voltica-kraken-tst" # 4th function app
 ]
 
@@ -34,5 +34,6 @@ nsg_name            = "nsg-Voltica-tst-default"
 vm_name             = "Volticatstsql"
 vm_admin_username   = "Volticatstadmin"
 # vm_admin_password is NOT set here. It will be provided via CI/CD.
+
 
 
