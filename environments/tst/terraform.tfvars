@@ -4,7 +4,7 @@ vm_rg_name     = "rg-Voltica-tst-vm"
 location       = "Southeast Asia"
 
 # --- Application Services Names ---
-storage_account_name         = "volticastoragetst-irfan771" # <-- UPDATED
+storage_account_name         = "volticastoragetstirfan771" # <-- UPDATED
 app_insights_name            = "Voltica-APiUI-insides-tst"
 app_service_plan_name        = "Voltica-tst-Plan"
 service_bus_namespace_name = "Volticapubsubtst-irfan771" # <-- UPDATED
@@ -34,3 +34,4 @@ nsg_name            = "nsg-Voltica-tst-default"
 vm_name             = "Volticatstsql"
 vm_admin_username   = "Volticatstadmin"
 # vm_admin_password is NOT set here. It will be provided via CI/CD.
+
