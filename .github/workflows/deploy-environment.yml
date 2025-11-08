@@ -1,24 +1,17 @@
-name: Deploy Environment
+name: Deploy TST Environment
 
+# This is now a simple manual button, no dropdown
 on:
   workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Which environment to deploy?'
-        required: true
-        type: choice
-        options:
-          - tst
-          - stg
-          - prod
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     
+    # This is now hardcoded to your 'tst' folder
     defaults:
       run:
-        working-directory: ./environments/${{ github.event.inputs.environment }}
+        working-directory: ./environments/tst
 
     steps:
       - name: Check out the repository code
@@ -38,35 +31,34 @@ jobs:
           rm -rf .terraform
       
       - name: Unlock and Clean State File
-        continue-on-error: true # It's OK if the file doesn't exist (BlobNotFound)
+        continue-on-error: true # It's OK if the file doesn't exist
         run: |
           echo "Attempting to break/delete stale state file..."
+          
+          # These commands read your backend.tf file to get the names
           ACCOUNT_NAME=$(grep "storage_account_name" backend.tf | awk -F'"' '{print $2}')
           CONTAINER_NAME=$(grep "container_name" backend.tf | awk -F'"' '{print $2}')
           KEY_NAME=$(grep "key" backend.tf | awk -F'"' '{print $2}')
-          BLOB_NAME="$KEY_NAME"
           
-          echo "Found Account: $ACCOUNT_NAME, Container: $CONTAINER_NAME, Lock Blob: $BLOB_NAME"
+          echo "Found Account: $ACCOUNT_NAME, Container: $CONTAINER_NAME, State File: $KEY_NAME"
           
           echo "Fetching storage account key..."
           AZURE_KEY=$(az storage account keys list --account-name $ACCOUNT_NAME --query "[0].value" -o tsv)
 
           echo "Attempt 1: Breaking lease on state file..."
-          # --- THIS IS THE FIX ---
-          # We add "|| true" to ensure the script continues even if this fails
-          az storage blob lease break --blob-name $BLOB_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY" || true
+          az storage blob lease break --blob-name $KEY_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY" || true
 
           echo "Attempt 2: Deleting state file to start fresh..."
           az storage blob delete --name $KEY_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY"
 
-      - name: Terraform Init
-        # --- THIS IS THE FIX ---
-        # We add -upgrade to fix the provider version errors
+      - name: Terraform Init (with Upgrade)
+        # This -upgrade flag will fix your provider errors
         run: terraform init -upgrade
 
       - name: Terraform Plan
         timeout-minutes: 30
         env:
+          # This passes your secrets to Terraform
           TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
           TF_VAR_sendgrid_api_key: ${{ secrets.SENDGRID_API_KEY }}
           TF_VAR_sendgrid_template_id: ${{ secrets.SENDGRID_TEMPLATE_ID }}
