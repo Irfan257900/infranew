@@ -24,17 +24,17 @@ jobs:
         uses: hashicorp/setup-terraform@v2
 
       #
-      # --- THIS STEP IS NOW UPDATED ---
+      # --- THIS IS THE CRITICAL FIX ---
       #
       - name: Clear local Terraform cache and Lock File
         run: |
           echo "Removing .terraform directory..."
           rm -rf .terraform
           echo "Removing .terraform.lock.hcl file..."
-          rm -f .terraform.lock.hcl # <-- THIS IS THE FIX
-      
+          rm -f .terraform.lock.hcl # <-- THIS LINE FIXES THE ERROR
+
       - name: Unlock and Clean State File
-        continue-on-error: true # It's OK if the file doesn't exist
+        continue-on-error: true 
         run: |
           echo "Attempting to break/delete stale state file..."
           ACCOUNT_NAME=$(grep "storage_account_name" backend.tf | awk -F'"' '{print $2}')
@@ -54,7 +54,6 @@ jobs:
           az storage blob delete --name $KEY_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY"
 
       - name: Terraform Init (with Upgrade)
-        # This -upgrade flag will fix your provider errors
         run: terraform init -upgrade
 
       - name: Terraform Plan
