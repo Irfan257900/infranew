@@ -37,36 +37,29 @@ jobs:
           echo "Removing .terraform directory..."
           rm -rf .terraform
       
-      #
-      # --- THIS IS THE NEW, FINAL FIX ---
-      #
       - name: Unlock and Clean State File
-        continue-on-error: true # It's OK if the file doesn't exist (BlobNotFound)
+        continue-on-error: true # It's OK if the file doesn't exist
         run: |
-          echo "Reading backend config..."
+          echo "Attempting to break/delete stale state file..."
           ACCOUNT_NAME=$(grep "storage_account_name" backend.tf | awk -F'"' '{print $2}')
           CONTAINER_NAME=$(grep "container_name" backend.tf | awk -F'"' '{print $2}')
           KEY_NAME=$(grep "key" backend.tf | awk -F'"' '{print $2}')
-          
-          echo "Found Account: $ACCOUNT_NAME, Container: $CONTAINER_NAME, State File: $KEY_NAME"
-          
-          echo "Fetching storage account key..."
           AZURE_KEY=$(az storage account keys list --account-name $ACCOUNT_NAME --query "[0].value" -o tsv)
-
-          echo "Attempt 1: Breaking lease on state file..."
+          
+          # Try to break the lease first
           az storage blob lease break --blob-name $KEY_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY"
-
-          echo "Attempt 2: Deleting state file to start fresh..."
-          # --- THIS IS THE CORRECTED COMMAND ---
+          # Now delete the file to be 100% sure
           az storage blob delete --name $KEY_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY"
 
       - name: Terraform Init
-        # Run init to create a new, fresh state file
         run: terraform init
 
       - name: Terraform Plan
-        timeout-minutes: 20
+        # --- INCREASED TIMEOUT ---
+        timeout-minutes: 30
         run: terraform plan -var="vm_admin_password=${{ secrets.VM_ADMIN_PASSWORD }}" -out=tfplan
 
       - name: Terraform Apply
+        # --- INCREASED TIMEOUT ---
+        timeout-minutes: 90 # 1.5 hours
         run: terraform apply -auto-approve tfplan
