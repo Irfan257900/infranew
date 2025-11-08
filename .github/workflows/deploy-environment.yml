@@ -38,7 +38,7 @@ jobs:
           rm -rf .terraform
       
       - name: Unlock and Clean State File
-        continue-on-error: true # It's OK if the file doesn't exist
+        continue-on-error: true
         run: |
           echo "Attempting to break/delete stale state file..."
           ACCOUNT_NAME=$(grep "storage_account_name" backend.tf | awk -F'"' '{print $2}')
@@ -46,20 +46,22 @@ jobs:
           KEY_NAME=$(grep "key" backend.tf | awk -F'"' '{print $2}')
           AZURE_KEY=$(az storage account keys list --account-name $ACCOUNT_NAME --query "[0].value" -o tsv)
           
-          # Try to break the lease first
           az storage blob lease break --blob-name $KEY_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY"
-          # Now delete the file to be 100% sure
           az storage blob delete --name $KEY_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY"
 
       - name: Terraform Init
         run: terraform init
 
-      - name: Terraform Plan
-        # --- INCREASED TIMEOUT ---
-        timeout-minutes: 30
+      #
+      # --- THIS IS THE UPDATED STEP ---
+      #
+      - name: Terraform Plan (with DEBUG)
+        # We are adding TF_LOG=DEBUG to see what is hanging
+        env:
+          TF_LOG: DEBUG
+        timeout-minutes: 30 # Keep the long timeout
         run: terraform plan -var="vm_admin_password=${{ secrets.VM_ADMIN_PASSWORD }}" -out=tfplan
 
       - name: Terraform Apply
-        # --- INCREASED TIMEOUT ---
-        timeout-minutes: 90 # 1.5 hours
+        timeout-minutes: 90
         run: terraform apply -auto-approve tfplan
