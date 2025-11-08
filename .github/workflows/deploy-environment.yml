@@ -69,7 +69,7 @@ jobs:
 
       - name: Terraform Plan
         # This has a 10-minute timeout to prevent stuck jobs
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: terraform plan -var="vm_admin_password=${{ secrets.VM_ADMIN_PASSWORD }}" -out=tfplan
 
       - name: Terraform Apply
