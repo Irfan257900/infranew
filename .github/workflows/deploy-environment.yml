@@ -43,13 +43,13 @@ jobs:
       #
       # --- THIS IS THE NEW STEP TO FIX THE LOCK ---
       #
-      - name: Force Unlock Stale Lock
+      #- name: Force Unlock Stale Lock
         # This will run the unlock command using the Lock ID from your error log
         # It will continue even if it fails (e.g., if there is no lock)
-        continue-on-error: true
-        run: |
-          echo "Attempting to force-unlock stale state lock..."
-          terraform force-unlock -force e9c9fcb2-a957-bab5-5c17-f9b3bebc19e2
+       # continue-on-error: true
+       # run: |
+         # echo "Attempting to force-unlock stale state lock..."
+         # terraform force-unlock -force e9c9fcb2-a957-bab5-5c17-f9b3bebc19e2
       
       - name: Terraform Plan
         run: terraform plan -var="vm_admin_password=${{ secrets.VM_ADMIN_PASSWORD }}" -out=tfplan
