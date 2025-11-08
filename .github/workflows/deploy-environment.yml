@@ -39,34 +39,32 @@ jobs:
       
       #
       # --- THIS IS THE NEW, FINAL FIX ---
-      # We will delete the corrupt state file to start fresh.
       #
-      - name: Delete Corrupt State File (to start fresh)
-        continue-on-error: true # It's OK if the file is already gone (BlobNotFound)
+      - name: Unlock and Clean State File
+        continue-on-error: true # It's OK if the file doesn't exist (BlobNotFound)
         run: |
-          echo "Attempting to delete corrupt state file..."
-          
-          # This reads the backend.tf file to get the names
+          echo "Reading backend config..."
           ACCOUNT_NAME=$(grep "storage_account_name" backend.tf | awk -F'"' '{print $2}')
           CONTAINER_NAME=$(grep "container_name" backend.tf | awk -F'"' '{print $2}')
           KEY_NAME=$(grep "key" backend.tf | awk -F'"' '{print $2}')
           
           echo "Found Account: $ACCOUNT_NAME, Container: $CONTAINER_NAME, State File: $KEY_NAME"
           
-          # 1. Get the account key
           echo "Fetching storage account key..."
           AZURE_KEY=$(az storage account keys list --account-name $ACCOUNT_NAME --query "[0].value" -o tsv)
 
-          # 2. Use that key to delete the state blob
-          echo "Deleting state file blob..."
-          az storage blob delete --blob-name $KEY_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY"
+          echo "Attempt 1: Breaking lease on state file..."
+          az storage blob lease break --blob-name $KEY_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY"
+
+          echo "Attempt 2: Deleting state file to start fresh..."
+          # --- THIS IS THE CORRECTED COMMAND ---
+          az storage blob delete --name $KEY_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY"
 
       - name: Terraform Init
         # Run init to create a new, fresh state file
         run: terraform init
 
       - name: Terraform Plan
-        # Increased timeout just in case
         timeout-minutes: 20
         run: terraform plan -var="vm_admin_password=${{ secrets.VM_ADMIN_PASSWORD }}" -out=tfplan
 
