@@ -9,12 +9,6 @@ terraform {
 
 provider "azurerm" {
   features {}
-  # BEST PRACTICE: Use variables for credentials, not hardcoded values.
-  # These will be set by environment variables in your pipeline (e.g., ARM_CLIENT_ID).
-  subscription_id = var.subscription_id
-  client_id       = var.client_id
-  client_secret   = var.client_secret
-  tenant_id       = var.tenant_id
-  
-  skip_provider_registration = true
+  # All manual login lines (client_id, tenant_id, etc.)
+  # have been removed.
 }
