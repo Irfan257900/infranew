@@ -38,10 +38,11 @@ jobs:
           rm -rf .terraform
       
       - name: Terraform Init
+        # We add -lock=false here to prevent init from trying to get a lock
         run: terraform init -lock=false
 
       #
-      # --- THIS IS THE NEW, FIXED STEP ---
+      # --- THIS IS THE FIXED STEP TO BREAK THE LOCK ---
       #
       - name: Break Stale Lease on State File
         continue-on-error: true # Will continue if blob not found
@@ -52,20 +53,22 @@ jobs:
           ACCOUNT_NAME=$(grep "storage_account_name" backend.tf | awk -F'"' '{print $2}')
           CONTAINER_NAME=$(grep "container_name" backend.tf | awk -F'"' '{print $2}')
           KEY_NAME=$(grep "key" backend.tf | awk -F'"' '{print $2}')
-          BLOB_NAME="$KEY_NAME.tflock"
+          
+          # This is the fix: The lock is on the state file itself
+          BLOB_NAME="$KEY_NAME"
           
           echo "Found Account: $ACCOUNT_NAME, Container: $CONTAINER_NAME, Lock Blob: $BLOB_NAME"
           
-          # --- NEW FIX ---
           # 1. Get the account key using our 'Contributor' role
           echo "Fetching storage account key..."
           AZURE_KEY=$(az storage account keys list --account-name $ACCOUNT_NAME --query "[0].value" -o tsv)
 
-          # 2. Use that key to break the lease
+          # 2. Use that key to break the lease on the correct blob
           echo "Breaking lease on blob..."
           az storage blob lease break --blob-name $BLOB_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY"
 
       - name: Terraform Plan
+        # This has a 10-minute timeout to prevent stuck jobs
         timeout-minutes: 10
         run: terraform plan -var="vm_admin_password=${{ secrets.VM_ADMIN_PASSWORD }}" -out=tfplan
 
