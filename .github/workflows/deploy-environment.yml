@@ -37,38 +37,36 @@ jobs:
           echo "Removing .terraform directory..."
           rm -rf .terraform
       
-      - name: Terraform Init
-        # We add -lock=false here to prevent init from trying to get a lock
-        run: terraform init -lock=false
-
       #
-      # --- THIS IS THE FIXED STEP TO BREAK THE LOCK ---
+      # --- THIS IS THE NEW, FINAL FIX ---
+      # We will delete the corrupt state file to start fresh.
       #
-      - name: Break Stale Lease on State File
-        continue-on-error: true # Will continue if blob not found
+      - name: Delete Corrupt State File (to start fresh)
+        continue-on-error: true # It's OK if the file is already gone (BlobNotFound)
         run: |
-          echo "Attempting to break any stale lease on the state file..."
+          echo "Attempting to delete corrupt state file..."
           
           # This reads the backend.tf file to get the names
           ACCOUNT_NAME=$(grep "storage_account_name" backend.tf | awk -F'"' '{print $2}')
           CONTAINER_NAME=$(grep "container_name" backend.tf | awk -F'"' '{print $2}')
           KEY_NAME=$(grep "key" backend.tf | awk -F'"' '{print $2}')
           
-          # This is the fix: The lock is on the state file itself
-          BLOB_NAME="$KEY_NAME"
+          echo "Found Account: $ACCOUNT_NAME, Container: $CONTAINER_NAME, State File: $KEY_NAME"
           
-          echo "Found Account: $ACCOUNT_NAME, Container: $CONTAINER_NAME, Lock Blob: $BLOB_NAME"
-          
-          # 1. Get the account key using our 'Contributor' role
+          # 1. Get the account key
           echo "Fetching storage account key..."
           AZURE_KEY=$(az storage account keys list --account-name $ACCOUNT_NAME --query "[0].value" -o tsv)
 
-          # 2. Use that key to break the lease on the correct blob
-          echo "Breaking lease on blob..."
-          az storage blob lease break --blob-name $BLOB_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY"
+          # 2. Use that key to delete the state blob
+          echo "Deleting state file blob..."
+          az storage blob delete --blob-name $KEY_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY"
+
+      - name: Terraform Init
+        # Run init to create a new, fresh state file
+        run: terraform init
 
       - name: Terraform Plan
-        # This has a 10-minute timeout to prevent stuck jobs
+        # Increased timeout just in case
         timeout-minutes: 20
         run: terraform plan -var="vm_admin_password=${{ secrets.VM_ADMIN_PASSWORD }}" -out=tfplan
 
