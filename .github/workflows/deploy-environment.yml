@@ -15,7 +15,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
+    
     defaults:
       run:
         working-directory: ./environments/${{ github.event.inputs.environment }}
@@ -36,26 +36,33 @@ jobs:
         run: |
           echo "Removing .terraform directory..."
           rm -rf .terraform
-
+      
       - name: Terraform Init
-        run: terraform init
+        # We add -lock=false here to prevent init from trying to get a lock
+        run: terraform init -lock=false
 
-      # This step automatically breaks any old locks it finds
+      #
+      # --- THIS IS THE NEW, FIXED STEP ---
+      #
       - name: Break Stale Lease on State File
         continue-on-error: true # Will continue if blob not found
         run: |
           echo "Attempting to break any stale lease on the state file..."
-
-          # These commands read your backend.tf file to get the names
-          ACCOUNT_NAME=$(terraform show -json | jq -r .config.backend.azurerm.storage_account_name)
-          CONTAINER_NAME=$(terraform show -json | jq -r .config.backend.azurerm.container_name)
-          BLOB_NAME=$(terraform show -json | jq -r .config.backend.azurerm.key).tflock
-
-          echo "Breaking lease on blob: $BLOB_NAME"
+          
+          # This is a more reliable way to get the backend names
+          # It reads the backend.tf file directly
+          ACCOUNT_NAME=$(grep "storage_account_name" backend.tf | awk -F'"' '{print $2}')
+          CONTAINER_NAME=$(grep "container_name" backend.tf | awk -F'"' '{print $2}')
+          KEY_NAME=$(grep "key" backend.tf | awk -F'"' '{print $2}')
+          BLOB_NAME="$KEY_NAME.tflock"
+          
+          echo "Found Account: $ACCOUNT_NAME, Container: $CONTAINER_NAME, Lock Blob: $BLOB_NAME"
+          
+          # Run the Azure CLI command to break the lease
           az storage blob lease break --blob-name $BLOB_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --auth-mode login
 
-      # This step will now fail after 10 minutes if it gets stuck
       - name: Terraform Plan
+        # This has a 10-minute timeout to prevent stuck jobs
         timeout-minutes: 10
         run: terraform plan -var="vm_admin_password=${{ secrets.VM_ADMIN_PASSWORD }}" -out=tfplan
 
