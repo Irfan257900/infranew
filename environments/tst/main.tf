@@ -112,4 +112,38 @@ module "function_apps" {
   app_insights_instrumentation_key = azurerm_application_insights.shared_insights.instrumentation_key
   storage_account_name         = module.storage_account.name
   storage_account_access_key   = module.storage_account.primary_access_key
+
+}
+# --- SENDGRID CONFIGURATION ---
+
+# 1. This creates a new, scoped API key inside your SendGrid account
+#    This key only has permission to send mail.
+resource "sendgrid_api_key" "voltica_tst_mail_key" {
+  name = "Voltica-TST-App-Key"
+  scopes = [
+    "mail.send"
+  ]
+}
+
+# 2. This takes the new API key and saves it in your Key Vault
+resource "azurerm_key_vault_secret" "sendgrid_api_key" {
+  name         = "SendGrid-ApiKey"
+  value        = sendgrid_api_key.voltica_tst_mail_key.api_key # Get secret from SendGrid
+  key_vault_id = module.key_vault.id
+
+  # Make sure the Key Vault is created first
+  depends_on = [
+    module.key_vault
+  ]
+}
+
+# 3. This takes your Template ID (from GitHub Secrets) and saves it in Key Vault
+resource "azurerm_key_vault_secret" "sendgrid_template_id" {
+  name         = "SendGrid-TemplateID-Welcome"
+  value        = var.sendgrid_template_id # Get ID from variable
+  key_vault_id = module.key_vault.id
+
+  depends_on = [
+    module.key_vault
+  ]
 }
