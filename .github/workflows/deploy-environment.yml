@@ -38,30 +38,47 @@ jobs:
           rm -rf .terraform
       
       - name: Unlock and Clean State File
-        continue-on-error: true
+        continue-on-error: true # It's OK if the file doesn't exist (BlobNotFound)
         run: |
           echo "Attempting to break/delete stale state file..."
+          
+          # This reads the backend.tf file to get the names
           ACCOUNT_NAME=$(grep "storage_account_name" backend.tf | awk -F'"' '{print $2}')
           CONTAINER_NAME=$(grep "container_name" backend.tf | awk -F'"' '{print $2}')
           KEY_NAME=$(grep "key" backend.tf | awk -F'"' '{print $2}')
-          AZURE_KEY=$(az storage account keys list --account-name $ACCOUNT_NAME --query "[0].value" -o tsv)
           
+          echo "Found Account: $ACCOUNT_NAME, Container: $CONTAINER_NAME, State File: $KEY_NAME"
+          
+          # 1. Get the account key
+          echo "Fetching storage account key..."
+          AZURE_KEY=$(az storage account keys list --account-name $ACCOUNT_NAME --query "[0].value" -o tsv)
+
+          # 2. Try to break the lease first
+          echo "Attempting to break lease on state file..."
           az storage blob lease break --blob-name $KEY_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY"
+          
+          # 3. Now delete the file to be 100% sure
+          echo "Deleting state file to start fresh..."
           az storage blob delete --name $KEY_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY"
 
       - name: Terraform Init
+        # Run init to create a new, fresh state file
         run: terraform init
 
-      #
-      # --- THIS IS THE UPDATED STEP ---
-      #
-      - name: Terraform Plan (with DEBUG)
-        # We are adding TF_LOG=DEBUG to see what is hanging
+      - name: Terraform Plan
+        # Increased timeout for large environments
+        timeout-minutes: 30
         env:
-          TF_LOG: DEBUG
-        timeout-minutes: 30 # Keep the long timeout
-        run: terraform plan -var="vm_admin_password=${{ secrets.VM_ADMIN_PASSWORD }}" -out=tfplan
+          # This securely passes all your GitHub Secrets to Terraform
+          TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
+          TF_VAR_sendgrid_api_key: ${{ secrets.SENDGRID_API_KEY }}
+          TF_VAR_sendgrid_template_id: ${{ secrets.SENDGRID_TEMPLATE_ID }}
+          # Add your Twilio (SMS) secrets here if you also use that provider
+          # TF_VAR_twilio_account_sid: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          # TF_VAR_twilio_auth_token: ${{ secrets.TWILIO_AUTH_TOKEN }}
+        run: terraform plan -out=tfplan
 
       - name: Terraform Apply
-        timeout-minutes: 90
+        # Increased timeout for the long build process
+        timeout-minutes: 90 # 1.5 hours
         run: terraform apply -auto-approve tfplan
