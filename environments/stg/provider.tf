@@ -9,7 +9,4 @@ terraform {
 
 provider "azurerm" {
   features {}
-  # All manual login lines (client_id, tenant_id, etc.)
-  # have been removed. This will now correctly use
-  # the GitHub Actions login.
 }
