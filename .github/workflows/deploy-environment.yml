@@ -15,14 +15,11 @@ jobs:
       - name: Check out the repository code
         uses: actions/checkout@v3
 
-      #
-      # --- THIS STEP IS THE FIX ---
-      #
       - name: Log in to Azure
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-          # This line installs the Az PowerShell module (which has Invoke-AzVMRunCommand)
+          # This line installs the Az PowerShell module
           enable-AzPSSession: true 
 
       - name: Setup Terraform
@@ -51,7 +48,7 @@ jobs:
         run: terraform apply -auto-approve tfplan
 
       #
-      # --- THIS STEP WILL NOW SUCCEED ---
+      # --- THIS IS THE 100% POWERSHELL STEP (FIXED) ---
       #
       - name: Configure SQL Server (PowerShell Method)
         if: success()
@@ -65,6 +62,10 @@ jobs:
         shell: pwsh 
 
         run: |
+          # --- FIX 1: Install the missing Az.Compute module ---
+          echo "Installing Az.Compute module..."
+          Install-Module -Name Az.Compute -Repository PSGallery -Force -AllowClobber -Scope CurrentUser
+          
           echo "Starting SQL Server configuration..."
           
           # This is the PowerShell script we will run on the VM
@@ -94,6 +95,7 @@ jobs:
                     SELECT 'Database VolticaDB already exists' AS Result;
                 END
               "
+              # --- FIX 2: Added -Password parameter ---
               \$dbResult = Invoke-Sqlcmd -Query \$createDbQuery -ServerInstance 'localhost' -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)"
               Write-Host \$dbResult.Result
               Write-Host ''
@@ -110,6 +112,7 @@ jobs:
                     SELECT 'Login voltica_app_user already exists' AS Result;
                 END
               "
+              # --- FIX 2: Added -Password parameter ---
               \$loginResult = Invoke-Sqlcmd -Query \$createLoginQuery -ServerInstance 'localhost' -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)"
               Write-Host \$loginResult.Result
               Write-Host ''
@@ -128,6 +131,7 @@ jobs:
                     SELECT 'User voltica_app_user already exists' AS Result;
                 END
               "
+              # --- FIX 2: Added -Password parameter ---
               \$userResult = Invoke-Sqlcmd -Query \$createUserQuery -ServerInstance 'localhost' -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)"
               Write-Host \$userResult.Result
               Write-Host ''
