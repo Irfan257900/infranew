@@ -120,39 +120,3 @@ module "function_apps" {
 
 }
 
-# --- ADD THIS ENTIRE SECTION AT THE END ---
-
-# --- SENDGRID CONFIGURATION ---
-
-# 1. This creates a new, scoped API key inside your SendGrid account
-resource "sendgrid_api_key" "voltica_tst_mail_key" {
-  name = "Voltica-TST-App-Key"
-  scopes = [
-    "mail.send"
-  ]
-}
-
-# 2. This takes the new API key and saves it in your Key Vault
-resource "azurerm_key_vault_secret" "sendgrid_api_key" {
-  name         = "SendGrid-ApiKey"
-  value        = sendgrid_api_key.voltica_tst_mail_key.api_key
-  key_vault_id = module.key_vault.id
-
-  # This ensures the permissions are set before we write the secret
-  depends_on = [
-    azurerm_role_assignment.kv_admin_rbac
-  ]
-}
-
-# 3. This takes your Template ID (from GitHub Secrets) and saves it in Key Vault
-resource "azurerm_key_vault_secret" "sendgrid_template_id" {
-  name         = "SendGrid-TemplateID-Welcome"
-  value        = var.sendgrid_template_id
-  key_vault_id = module.key_vault.id
-
-  # This ensures the permissions are set before we write the secret
-  depends_on = [
-    azurerm_role_assignment.kv_admin_rbac
-  ]
-}
-
