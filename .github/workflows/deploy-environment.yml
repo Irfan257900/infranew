@@ -6,7 +6,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
+
     defaults:
       run:
         working-directory: ./environments/tst
@@ -23,41 +23,22 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
 
-      #
-      # --- THIS IS THE CRITICAL FIX ---
-      #
       - name: Clear local Terraform cache and Lock File
+        # This step is critical to fix provider errors
         run: |
           echo "Removing .terraform directory..."
           rm -rf .terraform
           echo "Removing .terraform.lock.hcl file..."
-          rm -f .terraform.lock.hcl # <-- THIS LINE FIXES THE ERROR
+          rm -f .terraform.lock.hcl
 
-      - name: Unlock and Clean State File
-        continue-on-error: true 
-        run: |
-          echo "Attempting to break/delete stale state file..."
-          ACCOUNT_NAME=$(grep "storage_account_name" backend.tf | awk -F'"' '{print $2}')
-          CONTAINER_NAME=$(grep "container_name" backend.tf | awk -F'"' '{print $2}')
-          KEY_NAME=$(grep "key" backend.tf | awk -F'"' '{print $2}')
-          BLOB_NAME="$KEY_NAME"
-          
-          echo "Found Account: $ACCOUNT_NAME, Container: $CONTAINER_NAME, Lock Blob: $BLOB_NAME"
-          
-          echo "Fetching storage account key..."
-          AZURE_KEY=$(az storage account keys list --account-name $ACCOUNT_NAME --query "[0].value" -o tsv)
-
-          echo "Attempt 1: Breaking lease on state file..."
-          az storage blob lease break --blob-name $BLOB_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY" || true
-
-          echo "Attempt 2: Deleting state file to start fresh..."
-          az storage blob delete --name $KEY_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY"
+      # The complex "Unlock and Clean State File" step has been removed.
 
       - name: Terraform Init (with Upgrade)
+        # This will now succeed because the provider.tf is fixed
         run: terraform init -upgrade
 
       - name: Terraform Plan
-        
+        timeout-minutes: 30
         env:
           TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
           TF_VAR_sendgrid_api_key: ${{ secrets.SENDGRID_API_KEY }}
@@ -65,5 +46,5 @@ jobs:
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
-        
+        timeout-minutes: 90
         run: terraform apply -auto-approve tfplan
