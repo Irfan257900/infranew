@@ -1,7 +1,7 @@
 # --- Standardized Tagging Definition & Data ---
 locals {
-  env         = "tst"
-  project     = "Voltica"
+  env       = "tst"
+  project   = "Voltica"
   common_tags = {
     "Business-owners"     = "Project Manager"
     "Core-function"       = "application"
@@ -53,14 +53,8 @@ module "storage_account" {
   resource_group_name  = azurerm_resource_group.rg_apps.name
   tags                 = local.common_tags
 }
-resource "azurerm_application_insights" "shared_insights" {
-  name                = var.app_insights_name
-  location            = azurerm_resource_group.rg_apps.location
-  resource_group_name = azurerm_resource_group.rg_apps.name
-  workspace_id        = azurerm_log_analytics_workspace.shared_workspace.id
-  application_type    = "web"
-  tags                = local.common_tags
-}
+
+# --- THIS BLOCK WAS MOVED UP ---
 resource "azurerm_log_analytics_workspace" "shared_workspace" {
   name                = var.log_analytics_workspace_name
   location            = azurerm_resource_group.rg_apps.location
@@ -69,6 +63,17 @@ resource "azurerm_log_analytics_workspace" "shared_workspace" {
   retention_in_days   = 30
   tags                = local.common_tags
 }
+
+# --- THIS BLOCK NOW CORRECTLY DEPENDS ON THE WORKSPACE ABOVE ---
+resource "azurerm_application_insights" "shared_insights" {
+  name                = var.app_insights_name
+  location            = azurerm_resource_group.rg_apps.location
+  resource_group_name = azurerm_resource_group.rg_apps.name
+  workspace_id        = azurerm_log_analytics_workspace.shared_workspace.id
+  application_type    = "web"
+  tags                = local.common_tags
+}
+
 module "app_service_plan" {
   source                = "../../modules/app_service_plan"
   app_service_plan_name = var.app_service_plan_name
@@ -103,15 +108,15 @@ module "function_apps" {
   for_each = toset(var.function_app_names)
   source   = "../../modules/function_app"
 
-  location                     = azurerm_resource_group.rg_apps.location
-  resource_group_name          = azurerm_resource_group.rg_apps.name
-  tags                         = local.common_tags
-  function_app_name            = each.key
-  dotnet_version               = var.dotnet_version
-  app_service_plan_id          = module.app_service_plan.id
+  location                       = azurerm_resource_group.rg_apps.location
+  resource_group_name            = azurerm_resource_group.rg_apps.name
+  tags                           = local.common_tags
+  function_app_name              = each.key
+  dotnet_version                 = var.dotnet_version
+  app_service_plan_id            = module.app_service_plan.id
   app_insights_instrumentation_key = azurerm_application_insights.shared_insights.instrumentation_key
-  storage_account_name         = module.storage_account.name
-  storage_account_access_key   = module.storage_account.primary_access_key
+  storage_account_name           = module.storage_account.name
+  storage_account_access_key     = module.storage_account.primary_access_key
 
 }
 # --- SENDGRID CONFIGURATION ---
@@ -131,9 +136,10 @@ resource "azurerm_key_vault_secret" "sendgrid_api_key" {
   value        = sendgrid_api_key.voltica_tst_mail_key.api_key # Get secret from SendGrid
   key_vault_id = module.key_vault.id
 
-  # Make sure the Key Vault is created first
+  # --- THIS DEPENDS_ON BLOCK IS FIXED ---
+  # Make sure the Role Assignment is finished first
   depends_on = [
-    module.key_vault
+    azurerm_role_assignment.kv_admin_rbac
   ]
 }
 
@@ -143,7 +149,8 @@ resource "azurerm_key_vault_secret" "sendgrid_template_id" {
   value        = var.sendgrid_template_id # Get ID from variable
   key_vault_id = module.key_vault.id
 
+  # --- THIS DEPENDS_ON BLOCK IS FIXED ---
   depends_on = [
-    module.key_vault
+    azurerm_role_assignment.kv_admin_rbac
   ]
 }
