@@ -46,7 +46,7 @@ jobs:
         run: terraform apply -auto-approve tfplan
 
       #
-      # --- THIS STEP IS NOW FIXED ---
+      # --- THIS STEP IS NOW FIXED (FINAL VERSION) ---
       #
       - name: Configure SQL Server (Deploy DB Instance)
         if: success()
@@ -94,14 +94,17 @@ jobs:
           Write-Host 'SQL Server configuration complete.'
           "@
           
-          # --- THIS IS THE FIX ---
-          # 1. Save the script to a temporary file on the GitHub runner
+          # --- THIS IS THE NEW FIX ---
+          # 1. Save the script to a temporary file
           echo $scriptBlock | Out-File -FilePath "./db_setup.ps1" -Encoding utf8
           
-          # 2. Send the script *file* to the VM
-          echo "Sending configuration script file to VM: $env:VM_NAME in RG: $env:RG_NAME"
+          # 2. Read the script content back into a variable as a single string
+          $scriptContent = Get-Content -Path "./db_setup.ps1" -Raw
+          
+          # 3. Send the script *content* to the VM
+          echo "Sending configuration script content to VM: $env:VM_NAME in RG: $env:RG_NAME"
           az vm run-command invoke `
             --resource-group "$env:RG_NAME" `
             --name "$env:VM_NAME" `
             --command-id "RunPowerShellScript" `
-            --scripts "./db_setup.ps1" # We pass the file path here
+            --scripts $scriptContent # We pass the variable content, not the file path
