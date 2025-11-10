@@ -53,7 +53,7 @@ jobs:
       #
       # --- THIS IS YOUR "DEPLOY DB INSTANCE" STEP ---
       #
-      - name: Configure SQL Server
+      - name: Configure SQL Server (Deploy DB Instance)
         if: success() # Only runs if Terraform Apply was successful
         env:
           SQL_ADMIN_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
@@ -61,12 +61,19 @@ jobs:
           SQL_ADMIN_USER: "Volticatstadmin"
           RG_NAME: "rg-Voltica-tst-vm"
           VM_NAME: "Volticatstsql"
+        
+        # --- THIS IS THE FIX ---
+        shell: pwsh
+        # --- THIS TELLS GITHUB TO RUN THIS STEP USING POWERSHELL ---
+
         run: |
           echo "Starting SQL Server configuration..."
           
+          # This is the PowerShell script we will run on the VM
           $scriptBlock = @"
           Write-Host 'Connecting to SQL Server...'
           
+          # 1. Define the T-SQL commands
           $sqlScript = "
           -- Create the new database
           CREATE DATABASE VolticaDB;
@@ -89,10 +96,12 @@ jobs:
           GO
           "
           
+          # 2. Run the T-SQL commands using the VM's internal tools
           Invoke-Sqlcmd -Query $sqlScript -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)" -ServerInstance "localhost"
           Write-Host 'SQL Server configuration complete.'
           "@
           
+          # 3. Send this PowerShell script to the correct VM using Azure CLI
           echo "Sending configuration script to VM: $VM_NAME in RG: $RG_NAME"
           az vm run-command invoke \
             --resource-group "$RG_NAME" \
