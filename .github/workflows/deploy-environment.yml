@@ -24,7 +24,6 @@ jobs:
         uses: hashicorp/setup-terraform@v2
 
       - name: Clear local Terraform cache and Lock File
-        # This step is critical
         run: |
           echo "Removing .terraform directory..."
           rm -rf .terraform
@@ -43,21 +42,76 @@ jobs:
           az storage blob lease break --blob-name $BLOB_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY" || true
           az storage blob delete --name $KEY_NAME --container-name $CONTAINER_NAME --account-name $ACCOUNT_NAME --account-key "$AZURE_KEY"
 
-      #
-      # --- THIS STEP IS NOW FIXED ---
-      #
       - name: Terraform Init
-        # We have removed the -upgrade flag to try a fresh initialization
         run: terraform init
 
       - name: Terraform Plan
         timeout-minutes: 30
         env:
           TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
-          TF_VAR_sendgrid_api_key: ${{ secrets.SENDGRID_API_KEY }}
-          TF_VAR_sendgrid_template_id: ${{ secrets.SENDGRID_TEMPLATE_ID }}
+          # These are commented out as requested
+          # TF_VAR_mailgun_api_key: ${{ secrets.MAILGUN_API_KEY }}
+          # TF_VAR_mailgun_domain: ${{ secrets.MAILGUN_DOMAIN }}
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
         timeout-minutes: 90
         run: terraform apply -auto-approve tfplan
+
+      #
+      # --- THIS IS THE NEW STEP ---
+      #
+      - name: Configure SQL Server
+        if: success() # Only runs if Terraform Apply was successful
+        env:
+          # Gets the VM admin password from your existing secret
+          SQL_ADMIN_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
+          # Gets the NEW app user password from the secret you just created
+          SQL_APP_PASS: ${{ secrets.APP_SQL_PASSWORD }}
+          # Gets the VM admin username from your terraform.tfvars file
+          SQL_ADMIN_USER: "Volticatstadmin"
+          RG_NAME: "rg-Voltica-tst-vm"
+          VM_NAME: "Volticatstsql"
+        run: |
+          echo "Starting SQL Server configuration..."
+          
+          # This is the PowerShell script we will run on the VM
+          $scriptBlock = @"
+          Write-Host 'Connecting to SQL Server...'
+          
+          # 1. Define the T-SQL commands
+          $sqlScript = "
+          -- Create the new database
+          CREATE DATABASE VolticaDB;
+          GO
+          
+          -- Create the new SQL login
+          CREATE LOGIN voltica_app_user WITH PASSWORD = '$($env:SQL_APP_PASS)';
+          GO
+          
+          -- Switch to the new database
+          USE VolticaDB;
+          GO
+          
+          -- Create a user in the database for that login
+          CREATE USER voltica_app_user FOR LOGIN voltica_app_user;
+          GO
+          
+          -- Give the new user full ownership of the database
+          ALTER ROLE db_owner ADD MEMBER voltica_app_user;
+          GO
+          "
+          
+          # 2. Run the T-SQL commands using the VM's internal tools
+          # We use the VM admin username and password
+          Invoke-Sqlcmd -Query $sqlScript -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)" -ServerInstance "localhost"
+          Write-Host 'SQL Server configuration complete.'
+          "@
+          
+          # 3. Send this PowerShell script to the correct VM using Azure CLI
+          echo "Sending configuration script to VM: $VM_NAME in RG: $RG_NAME"
+          az vm run-command invoke \
+            --resource-group "$RG_NAME" \
+            --name "$VM_NAME" \
+            --command-id "RunPowerShellScript" \
+            --scripts "$scriptBlock"
