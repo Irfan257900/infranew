@@ -46,21 +46,19 @@ jobs:
         run: terraform apply -auto-approve tfplan
 
       #
-      # --- THIS STEP IS NOW FIXED (FINAL VERSION) ---
+      # --- THIS HAS BEEN SPLIT INTO TWO STEPS ---
       #
-      - name: Configure SQL Server (Deploy DB Instance)
+      - name: 1. Create SQL Database Script
         if: success()
         env:
           SQL_ADMIN_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
           SQL_APP_PASS: ${{ secrets.APP_SQL_PASSWORD }}
           SQL_ADMIN_USER: "Volticatstadmin"
-          RG_NAME: "rg-Voltica-tst-vm"
-          VM_NAME: "Volticatstsql"
         
-        shell: pwsh 
+        shell: pwsh # This step MUST run in PowerShell
 
         run: |
-          echo "Starting SQL Server configuration..."
+          echo "Creating SQL script file..."
           
           # This is the PowerShell script we will run on the VM
           $scriptBlock = @"
@@ -94,15 +92,24 @@ jobs:
           Write-Host 'SQL Server configuration complete.'
           "@
           
-          # --- THIS IS THE NEW FIX ---
-          # 1. Save the script to a temporary file
+          # 3. Save the script to a temporary file
           echo $scriptBlock | Out-File -FilePath "./db_setup.ps1" -Encoding utf8
+          echo "SQL script file created."
+
+      - name: 2. Run SQL Script on VM
+        if: success()
+        env:
+          RG_NAME: "rg-Voltica-tst-vm"
+          VM_NAME: "Volticatstsql"
+        
+        # This step runs in the default BASH shell
+        
+        run: |
+          echo "Sending configuration script file to VM: $VM_NAME in RG: $RG_NAME"
           
-          # 2. Send the script *file* to the VM using the @ symbol
-          #    This tells the 'az' command to read the file content itself.
-          echo "Sending configuration script file to VM: $env:VM_NAME in RG: $env:RG_NAME"
-          az vm run-command invoke `
-            --resource-group "$env:RG_NAME" `
-            --name "$env:VM_NAME" `
-            --command-id "RunPowerShellScript" `
-            --scripts @./db_setup.ps1 # <-- THIS IS THE FIX
+          # The Bash shell correctly understands the @ syntax
+          az vm run-command invoke \
+            --resource-group "$RG_NAME" \
+            --name "$VM_NAME" \
+            --command-id "RunPowerShellScript" \
+            --scripts @./db_setup.ps1
