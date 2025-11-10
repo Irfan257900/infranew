@@ -1,4 +1,5 @@
 name: Deploy TST Environment
+
 on:
   workflow_dispatch:
 
@@ -9,19 +10,19 @@ jobs:
     defaults:
       run:
         working-directory: ./environments/tst
-    
+
     steps:
       - name: Check out the repository code
         uses: actions/checkout@v3
-      
+
       - name: Log in to Azure
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-      
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
-      
+
       - name: Clear local Terraform cache and Lock File
         run: |
           echo "Removing .terraform directory..."
@@ -29,19 +30,21 @@ jobs:
           echo "Removing .terraform.lock.hcl file..."
           rm -f .terraform.lock.hcl
       
+      # The "Unlock and Clean State File" step has been removed
+
       - name: Terraform Init
         run: terraform init
-      
+
       - name: Terraform Plan
         timeout-minutes: 30
         env:
           TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
         run: terraform plan -out=tfplan
-      
+
       - name: Terraform Apply
         timeout-minutes: 90
         run: terraform apply -auto-approve tfplan
-      
+
       - name: Create and Run SQL Database Script
         if: success()
         env:
@@ -50,70 +53,104 @@ jobs:
           SQL_ADMIN_USER: "Volticatstadmin"
           RG_NAME: "rg-Voltica-tst-vm"
           VM_NAME: "Volticatstsql"
-        shell: bash
+        shell: bash 
         run: |
           echo "Creating PowerShell script file..."
-          cat > sql_setup.ps1 <<'ENDOFSCRIPT'
+          
+          # 1. Create the PowerShell script content
+          cat > db_setup.ps1 <<'EOFSCRIPT'
           param(
               [Parameter(Mandatory=$true)][string]$SqlAdminUser,
               [Parameter(Mandatory=$true)][string]$SqlAdminPass,
               [Parameter(Mandatory=$true)][string]$SqlAppPass
           )
-          Write-Host '========================================='
-          Write-Host 'Starting SQL Server Database Configuration'
-          Write-Host '========================================='
+          
+          Write-Host "Starting SQL configuration..."
           Write-Host "Admin User: $SqlAdminUser"
-          Write-Host ''
+          
+          $sql = @"
+          IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'VolticaDB')
+          BEGIN
+              CREATE DATABASE VolticaDB;
+              PRINT 'Database VolticaDB created.';
+          END
+          ELSE
+          BEGIN
+              PRINT 'Database VolticaDB already exists.';
+          END
+          
+          IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = N'voltica_app_user')
+          BEGIN
+              CREATE LOGIN voltica_app_user WITH PASSWORD = '$SqlAppPass';
+              PRINT 'Login voltica_app_user created.';
+          END
+          ELSE
+          BEGIN
+              PRINT 'Login voltica_app_user already exists.';
+          END
+          
+          USE VolticaDB;
+          
+          IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = N'voltica_app_user')
+          BEGIN
+              CREATE USER voltica_app_user FOR LOGIN voltica_app_user;
+              ALTER ROLE db_owner ADD MEMBER voltica_app_user;
+              PRINT 'User voltica_app_user created and added to db_owner role.';
+          END
+          ELSE
+          BEGIN
+              PRINT 'User voltica_app_user already exists.';
+          END
+          "@
+          
           try {
-              Write-Host 'Step 1: Importing SqlServer module...'
+              Write-Host "Importing SqlServer module..."
               Import-Module SqlServer -ErrorAction Stop
-              Write-Host '✓ SqlServer module loaded successfully'
-              Write-Host ''
-              Write-Host 'Step 2: Creating database VolticaDB...'
-              $createDbQuery = "IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'VolticaDB') BEGIN CREATE DATABASE VolticaDB; SELECT 'Database VolticaDB created successfully' AS Result; END ELSE BEGIN SELECT 'Database VolticaDB already exists' AS Result; END"
-              $dbResult = Invoke-Sqlcmd -Query $createDbQuery -ServerInstance 'localhost' -Username $SqlAdminUser -Password $SqlAdminPass
-              Write-Host $dbResult.Result
-              Write-Host ''
-              Write-Host 'Step 3: Creating login voltica_app_user...'
-              $createLoginQuery = "IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = N'voltica_app_user') BEGIN CREATE LOGIN voltica_app_user WITH PASSWORD = '$SqlAppPass'; SELECT 'Login voltica_app_user created successfully' AS Result; END ELSE BEGIN SELECT 'Login voltica_app_user already exists' AS Result; END"
-              $loginResult = Invoke-Sqlcmd -Query $createLoginQuery -ServerInstance 'localhost' -Username $SqlAdminUser -Password $SqlAdminPass
-              Write-Host $loginResult.Result
-              Write-Host ''
-              Write-Host 'Step 4: Creating database user and assigning permissions...'
-              $createUserQuery = "USE VolticaDB; IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = N'voltica_app_user') BEGIN CREATE USER voltica_app_user FOR LOGIN voltica_app_user; ALTER ROLE db_owner ADD MEMBER voltica_app_user; SELECT 'User voltica_app_user created and added to db_owner role' AS Result; END ELSE BEGIN SELECT 'User voltica_app_user already exists' AS Result; END"
-              $userResult = Invoke-Sqlcmd -Query $createUserQuery -ServerInstance 'localhost' -Username $SqlAdminUser -Password $SqlAdminPass
-              Write-Host $userResult.Result
-              Write-Host ''
-              Write-Host '========================================='
-              Write-Host '✅ SQL configuration completed successfully!'
-              Write-Host '========================================='
-              Write-Host 'Database: VolticaDB'
-              Write-Host 'App User: voltica_app_user'
-              Write-Host 'Permissions: db_owner'
-              Write-Host '========================================='
+              
+              Write-Host "Executing SQL commands..."
+              Invoke-Sqlcmd -Query $sql -ServerInstance "localhost" -Username $SqlAdminUser -Password $SqlAdminPass -Verbose
+              
+              Write-Host "✅ SQL configuration completed successfully."
               exit 0
           }
           catch {
-              Write-Host ''
-              Write-Host '========================================='
-              Write-Host '❌ SQL CONFIGURATION FAILED'
-              Write-Host '========================================='
-              Write-Host "Error Message: $($_.Exception.Message)"
-              Write-Host "Error Details: $($_.Exception)"
-              Write-Host "Stack Trace: $($_.ScriptStackTrace)"
-              Write-Host '========================================='
+              Write-Host "❌ SQL configuration failed: $($_.Exception.Message)"
+              Write-Host "Stack Trace: $($_.Exception.StackTrace)"
               exit 1
           }
-          ENDOFSCRIPT
+          EOFSCRIPT
           
-          echo "Script file created successfully"
-          echo "Sending script to VM..."
+          echo "Script created successfully"
           
+          # 1. Read the script content from the file into a new variable
+          echo "Reading script content into variable..."
+          script_content=$(cat db_setup.ps1)
+
+          echo "Executing script on remote VM..."
+          
+          # 2. Pass the script content as a variable (in quotes)
           az vm run-command invoke \
             --resource-group "$RG_NAME" \
             --name "$VM_NAME" \
             --command-id RunPowerShellScript \
-            --scripts @sql_setup.ps1 \
-            --parameters SqlAdminUser="$SQL_ADMIN_USER" SqlAdminPass="$SQL_ADMIN_PASS" SqlAppPass="$SQL_APP_PASS"
+            --scripts "$script_content" \
+            --parameters "SqlAdminUser=${SQL_ADMIN_USER}" "SqlAdminPass=${SQL_ADMIN_PASS}" "SqlAppPass=${SQL_APP_PASS}"
           
           echo "Script execution completed"
+
+      #
+      # --- THIS IS YOUR NEW ZAPIER TRIGGER STEP ---
+      #
+      - name: Trigger Post-Deployment Automation
+        if: success()  # Only run if deployment and DB script succeed
+        env:
+          ZAPIER_WEBHOOK_URL: ${{ secrets.ZAPIER_WEBHOOK_URL }}
+        run: |
+          curl -X POST "$ZAPIER_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "projectName": "${{ github.event.repository.name }}",
+              "appServiceUrl": "paybase-prd.azurewebsites.net", 
+              "appServiceIp": "20.10.5.120",
+              "ownerEmail": "irfanmd2579@gmail.com"
+            }'
