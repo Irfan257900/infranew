@@ -46,32 +46,36 @@ jobs:
         run: terraform apply -auto-approve tfplan
 
       #
-      # --- THIS HAS BEEN SPLIT INTO TWO STEPS ---
+      # --- THIS IS THE NEW, FIXED STEP ---
       #
-      - name: 1. Create SQL Database Script
+      - name: Create and Run SQL Database Script
         if: success()
         env:
           SQL_ADMIN_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
           SQL_APP_PASS: ${{ secrets.APP_SQL_PASSWORD }}
           SQL_ADMIN_USER: "Volticatstadmin"
+          RG_NAME: "rg-Voltica-tst-vm"
+          VM_NAME: "Volticatstsql"
         
-        shell: pwsh # This step MUST run in PowerShell
-
+        # This step runs in the default BASH shell
+        shell: bash 
+        
         run: |
           echo "Creating SQL script file..."
           
-          # This is the PowerShell script we will run on the VM
-          $scriptBlock = @"
+          # 1. Use 'cat' to create the PowerShell script file.
+          #    This is more reliable than PowerShell's Out-File.
+          #    We are injecting the secret values directly into the file.
+          cat << EOF > ./db_setup.ps1
           Write-Host 'Connecting to SQL Server...'
           
-          # 1. Define the T-SQL commands
-          $sqlScript = "
+          \$sqlScript = "
           -- Create the new database
           CREATE DATABASE VolticaDB;
           GO
           
           -- Create the new SQL login
-          CREATE LOGIN voltica_app_user WITH PASSWORD = '$($env:SQL_APP_PASS)';
+          CREATE LOGIN voltica_app_user WITH PASSWORD = '${SQL_APP_PASS}';
           GO
           
           -- Switch to the new database
@@ -87,27 +91,15 @@ jobs:
           GO
           "
           
-          # 2. Run the T-SQL commands using the VM's internal tools
-          Invoke-Sqlcmd -Query $sqlScript -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)" -ServerInstance "localhost"
+          # Run the T-SQL commands using the VM's internal tools
+          Invoke-Sqlcmd -Query \$sqlScript -Username "${SQL_ADMIN_USER}" -Password "${SQL_ADMIN_PASS}" -ServerInstance "localhost"
           Write-Host 'SQL Server configuration complete.'
-          "@
+          EOF
           
-          # 3. Save the script to a temporary file
-          echo $scriptBlock | Out-File -FilePath "./db_setup.ps1" -Encoding utf8
           echo "SQL script file created."
-
-      - name: 2. Run SQL Script on VM
-        if: success()
-        env:
-          RG_NAME: "rg-Voltica-tst-vm"
-          VM_NAME: "Volticatstsql"
-        
-        # This step runs in the default BASH shell
-        
-        run: |
-          echo "Sending configuration script file to VM: $VM_NAME in RG: $RG_NAME"
           
-          # The Bash shell correctly understands the @ syntax
+          # 2. Send the script file to the VM using the Bash '@' syntax
+          echo "Sending configuration script file to VM: $VM_NAME in RG: $RG_NAME"
           az vm run-command invoke \
             --resource-group "$RG_NAME" \
             --name "$VM_NAME" \
