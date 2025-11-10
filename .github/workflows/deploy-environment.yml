@@ -19,7 +19,7 @@ jobs:
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-          # This is still needed for authentication
+          # This line installs the Az PowerShell module
           enable-AzPSSession: true 
 
       - name: Setup Terraform
@@ -48,7 +48,7 @@ jobs:
         run: terraform apply -auto-approve tfplan
 
       #
-      # --- THIS STEP IS NOW FIXED ---
+      # --- THIS IS THE 100% POWERSHELL STEP (FIXED) ---
       #
       - name: Configure SQL Server (PowerShell Method)
         if: success()
@@ -62,11 +62,6 @@ jobs:
         shell: pwsh 
 
         run: |
-          # --- THIS IS THE FIX ---
-          # Install the specific Az module that contains the 'Invoke-AzVMRunCommand'
-          echo "Installing Az.Compute module..."
-          Install-Module -Name Az.Compute -Repository PSGallery -Force -AllowClobber -Scope CurrentUser
-          
           echo "Starting SQL Server configuration..."
           
           # This is the PowerShell script we will run on the VM
@@ -78,7 +73,8 @@ jobs:
           Write-Host ''
 
           try {
-              Write-Host 'Step 1: Importing SqlServer module...'
+              Write-Host 'Step 1: Installing/Importing SqlServer module...'
+              Install-Module -Name SqlServer -Repository PSGallery -Force -AllowClobber -Scope CurrentUser
               Import-Module SqlServer -ErrorAction Stop
               Write-Host '✓ SqlServer module loaded successfully'
               Write-Host ''
@@ -95,6 +91,7 @@ jobs:
                     SELECT 'Database VolticaDB already exists' AS Result;
                 END
               "
+              # --- THIS IS THE FIX --- (Added -Password)
               \$dbResult = Invoke-Sqlcmd -Query \$createDbQuery -ServerInstance 'localhost' -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)"
               Write-Host \$dbResult.Result
               Write-Host ''
@@ -111,6 +108,7 @@ jobs:
                     SELECT 'Login voltica_app_user already exists' AS Result;
                 END
               "
+              # --- THIS IS THE FIX --- (Added -Password)
               \$loginResult = Invoke-Sqlcmd -Query \$createLoginQuery -ServerInstance 'localhost' -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)"
               Write-Host \$loginResult.Result
               Write-Host ''
@@ -129,6 +127,7 @@ jobs:
                     SELECT 'User voltica_app_user already exists' AS Result;
                 END
               "
+              # --- THIS IS THE FIX --- (Added -Password)
               \$userResult = Invoke-Sqlcmd -Query \$createUserQuery -ServerInstance 'localhost' -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)"
               Write-Host \$userResult.Result
               Write-Host ''
@@ -158,7 +157,7 @@ jobs:
             -ScriptString $scriptBlock
 
       #
-      # --- THIS IS YOUR DYNAMIC ZAPIER TRIGGER STEP ---
+      # --- THIS IS YOUR NEW DYNAMIC ZAPIER TRIGGER (WITH YOUR FORMAT) ---
       #
       - name: Trigger Post-Deployment Automation
         if: success()  # Only run if deployment and DB script succeed
@@ -168,40 +167,27 @@ jobs:
           VM_NAME: "Volticatstsql"
         shell: bash
         run: |
+          # Wait 30 seconds for Azure API to be consistent
+          echo "Waiting 30 seconds for Azure API to stabilize..."
+          sleep 30
+          
           echo "Gathering dynamic data for Zapier..."
           
-          # Get Project Name and User from GitHub
+          # --- Get Dynamic Data ---
           PROJECT_NAME="${{ github.event.repository.name }}"
-          TRIGGERING_USER="${{ github.actor }}"
-          
-          # Get the VM's Network Interface (NIC) ID
           NIC_ID=$(az vm show -g $RG_NAME -n $VM_NAME --query "networkProfile.networkInterfaces[0].id" -o tsv)
-          
-          # Get the Public IP ID from the NIC
           PIP_ID=$(az network nic show --ids $NIC_ID --query "ipConfigurations[0].publicIpAddress.id" -o tsv)
-          
-          # Get the actual IP address from the Public IP resource
           VM_PUBLIC_IP=$(az network public-ip show --ids $PIP_ID --query "ipAddress" -o tsv)
-          
-          # Get the VM's Fully Qualified Domain Name (if it has one, otherwise it's blank)
-          VM_FQDN=$(az network public-ip show --ids $PIP_ID --query "dnsSettings.fqdn" -o tsv)
-
-          # Use the FQDN if it exists, otherwise use the IP
-          if [ -z "$VM_FQDN" ]; then
-            VM_URL="http://$VM_PUBLIC_IP"
-          else
-            VM_URL="http://$VM_FQDN"
-          fi
+          VM_URL="http://$VM_PUBLIC_IP" # Set the URL to the IP address
 
           echo "Dynamic Data Found: IP=$VM_PUBLIC_IP, URL=$VM_URL"
 
-          # Create the JSON payload
+          # --- Create the JSON payload *using your requested format* ---
           JSON_PAYLOAD=$(cat <<EOF
           {
             "projectName": "$PROJECT_NAME",
-            "triggeringUser": "$TRIGGERING_USER",
-            "vmUrl": "$VM_URL", 
-            "vmIp": "$VM_PUBLIC_IP",
+            "appServiceUrl": "$VM_URL", 
+            "appServiceIp": "$VM_PUBLIC_IP",
             "ownerEmail": "irfanmd2579@gmail.com"
           }
           EOF
