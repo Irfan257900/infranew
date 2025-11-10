@@ -60,54 +60,76 @@ jobs:
         run: |
           echo "Creating PowerShell script to configure SQL..."
 
-          # Create the PowerShell script file safely
-          cat > db_setup.ps1 <<'EOF'
+          # Create the PowerShell script content
+          cat > db_setup.ps1 <<'EOFSCRIPT'
           param(
               [string]$SqlAdminUser,
               [string]$SqlAdminPass,
               [string]$SqlAppPass
           )
-
-          Write-Host "Connecting to SQL Server..."
-
+          
+          Write-Host "Starting SQL configuration..."
+          Write-Host "Admin User: $SqlAdminUser"
+          
           $sql = @"
           IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'VolticaDB')
           BEGIN
               CREATE DATABASE VolticaDB;
+              PRINT 'Database VolticaDB created.';
           END
-          GO
-
+          ELSE
+          BEGIN
+              PRINT 'Database VolticaDB already exists.';
+          END
+          
           IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = N'voltica_app_user')
           BEGIN
               CREATE LOGIN voltica_app_user WITH PASSWORD = '$SqlAppPass';
+              PRINT 'Login voltica_app_user created.';
           END
-          GO
-
+          ELSE
+          BEGIN
+              PRINT 'Login voltica_app_user already exists.';
+          END
+          
           USE VolticaDB;
-          GO
-
+          
           IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = N'voltica_app_user')
           BEGIN
               CREATE USER voltica_app_user FOR LOGIN voltica_app_user;
               ALTER ROLE db_owner ADD MEMBER voltica_app_user;
+              PRINT 'User voltica_app_user created and added to db_owner role.';
           END
-          GO
+          ELSE
+          BEGIN
+              PRINT 'User voltica_app_user already exists.';
+          END
           "@
-
+          
           try {
+              Write-Host "Importing SqlServer module..."
               Import-Module SqlServer -ErrorAction Stop
-              Invoke-Sqlcmd -Query $sql -ServerInstance "localhost" -Username $SqlAdminUser -Password $SqlAdminPass
+              
+              Write-Host "Executing SQL commands..."
+              Invoke-Sqlcmd -Query $sql -ServerInstance "localhost" -Username $SqlAdminUser -Password $SqlAdminPass -Verbose
+              
               Write-Host "✅ SQL configuration completed successfully."
+              exit 0
           }
           catch {
               Write-Host "❌ SQL configuration failed: $($_.Exception.Message)"
+              Write-Host "Stack Trace: $($_.Exception.StackTrace)"
               exit 1
           }
-          EOF
-
-          echo "Script created successfully. Executing remotely..."
-
-          # Run the PowerShell script on the SQL VM
+          EOFSCRIPT
+          
+          echo "Script created. Contents:"
+          cat db_setup.ps1
+          
+          echo ""
+          echo "Executing script on remote VM..."
+          
+          # Execute using the script content directly
           az vm run-command invoke \
             --resource-group "$RG_NAME" \
             --name "$VM_NAME" \
