@@ -1,4 +1,54 @@
-- name: Create and Run SQL Database Script
+name: Deploy TST Environment
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: ./environments/tst
+
+    steps:
+      - name: Check out the repository code
+        uses: actions/checkout@v3
+
+      - name: Log in to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+
+      - name: Clear local Terraform cache and Lock File
+        run: |
+          echo "Removing .terraform directory..."
+          rm -rf .terraform
+          echo "Removing .terraform.lock.hcl file..."
+          rm -f .terraform.lock.hcl
+      
+      # The "Unlock and Clean State File" step has been removed
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Plan
+        timeout-minutes: 30
+        env:
+          TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        timeout-minutes: 90
+        run: terraform apply -auto-approve tfplan
+
+      #
+      # --- THIS IS YOUR NEW, CORRECT STEP ---
+      #
+      - name: Create and Run SQL Database Script
         if: success()
         env:
           SQL_ADMIN_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
