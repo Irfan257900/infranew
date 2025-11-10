@@ -99,11 +99,12 @@ jobs:
           Write-Host 'SQL Server configuration complete.'
           "@
           
-          # 3. Send this PowerShell script to the correct VM using Azure CLI
-          #    --- This block is fixed to use PowerShell ` backticks ---
-          echo "Sending configuration script to VM: $VM_NAME in RG: $RG_NAME"
+          #
+          # --- THIS BLOCK IS NOW FIXED (using $env:) ---
+          #
+          echo "Sending configuration script to VM: $env:VM_NAME in RG: $env:RG_NAME"
           az vm run-command invoke `
-            --resource-group "$RG_NAME" `
-            --name "$VM_NAME" `
+            --resource-group "$env:RG_NAME" `
+            --name "$env:VM_NAME" `
             --command-id "RunPowerShellScript" `
             --scripts "$scriptBlock"
