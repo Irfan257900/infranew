@@ -15,11 +15,14 @@ jobs:
       - name: Check out the repository code
         uses: actions/checkout@v3
 
+      #
+      # --- THIS STEP IS THE FIX ---
+      #
       - name: Log in to Azure
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-          # This line installs the Az PowerShell module
+          # This line installs the Az PowerShell module (which has Invoke-AzVMRunCommand)
           enable-AzPSSession: true 
 
       - name: Setup Terraform
@@ -48,7 +51,7 @@ jobs:
         run: terraform apply -auto-approve tfplan
 
       #
-      # --- THIS IS THE 100% POWERSHELL STEP (FIXED) ---
+      # --- THIS STEP WILL NOW SUCCEED ---
       #
       - name: Configure SQL Server (PowerShell Method)
         if: success()
@@ -91,7 +94,6 @@ jobs:
                     SELECT 'Database VolticaDB already exists' AS Result;
                 END
               "
-              # --- THIS IS THE FIX --- (Added -Password)
               \$dbResult = Invoke-Sqlcmd -Query \$createDbQuery -ServerInstance 'localhost' -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)"
               Write-Host \$dbResult.Result
               Write-Host ''
@@ -108,7 +110,6 @@ jobs:
                     SELECT 'Login voltica_app_user already exists' AS Result;
                 END
               "
-              # --- THIS IS THE FIX --- (Added -Password)
               \$loginResult = Invoke-Sqlcmd -Query \$createLoginQuery -ServerInstance 'localhost' -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)"
               Write-Host \$loginResult.Result
               Write-Host ''
@@ -127,7 +128,6 @@ jobs:
                     SELECT 'User voltica_app_user already exists' AS Result;
                 END
               "
-              # --- THIS IS THE FIX --- (Added -Password)
               \$userResult = Invoke-Sqlcmd -Query \$createUserQuery -ServerInstance 'localhost' -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)"
               Write-Host \$userResult.Result
               Write-Host ''
@@ -157,7 +157,7 @@ jobs:
             -ScriptString $scriptBlock
 
       #
-      # --- THIS IS YOUR NEW DYNAMIC ZAPIER TRIGGER (WITH YOUR FORMAT) ---
+      # --- THIS IS YOUR DYNAMIC ZAPIER TRIGGER STEP ---
       #
       - name: Trigger Post-Deployment Automation
         if: success()  # Only run if deployment and DB script succeed
