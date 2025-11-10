@@ -31,7 +31,6 @@ jobs:
           rm -f .terraform.lock.hcl
       
       # The "Unlock and Clean State File" step has been removed
-      # to allow for correct updates.
 
       - name: Terraform Init
         run: terraform init
@@ -40,9 +39,6 @@ jobs:
         timeout-minutes: 30
         env:
           TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
-          # These are commented out as requested
-          # TF_VAR_mailgun_api_key: ${{ secrets.MAILGUN_API_KEY }}
-          # TF_VAR_mailgun_domain: ${{ secrets.MAILGUN_DOMAIN }}
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
@@ -50,10 +46,10 @@ jobs:
         run: terraform apply -auto-approve tfplan
 
       #
-      # --- THIS IS YOUR "DEPLOY DB INSTANCE" STEP ---
+      # --- THIS STEP IS NOW FIXED ---
       #
       - name: Configure SQL Server (Deploy DB Instance)
-        if: success() # Only runs if Terraform Apply was successful
+        if: success()
         env:
           SQL_ADMIN_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
           SQL_APP_PASS: ${{ secrets.APP_SQL_PASSWORD }}
@@ -61,7 +57,6 @@ jobs:
           RG_NAME: "rg-Voltica-tst-vm"
           VM_NAME: "Volticatstsql"
         
-        # This tells GitHub to run this step using PowerShell
         shell: pwsh 
 
         run: |
@@ -99,12 +94,14 @@ jobs:
           Write-Host 'SQL Server configuration complete.'
           "@
           
-          #
-          # --- THIS BLOCK IS NOW FIXED (using $env:) ---
-          #
-          echo "Sending configuration script to VM: $env:VM_NAME in RG: $env:RG_NAME"
+          # --- THIS IS THE FIX ---
+          # 1. Save the script to a temporary file on the GitHub runner
+          echo $scriptBlock | Out-File -FilePath "./db_setup.ps1" -Encoding utf8
+          
+          # 2. Send the script *file* to the VM
+          echo "Sending configuration script file to VM: $env:VM_NAME in RG: $env:RG_NAME"
           az vm run-command invoke `
             --resource-group "$env:RG_NAME" `
             --name "$env:VM_NAME" `
             --command-id "RunPowerShellScript" `
-            --scripts "$scriptBlock"
+            --scripts "./db_setup.ps1" # We pass the file path here
