@@ -27,14 +27,5 @@ variable "web_app_names" {
   default     = []
 
 }
-variable "sendgrid_api_key" {
-  description = "Master SendGrid API Key"
-  type        = string
-  sensitive   = true
-}
 
-variable "sendgrid_template_id" {
-  description = "The ID of the SendGrid email template (e.g., d-123...)"
-  type        = string
-  sensitive   = true
-}
+
