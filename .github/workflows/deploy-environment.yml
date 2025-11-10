@@ -12,28 +12,35 @@ jobs:
         working-directory: ./environments/tst
 
     steps:
+      # ===========================
+      # 1️⃣ Checkout Repository Code
+      # ===========================
       - name: Check out the repository code
         uses: actions/checkout@v3
 
+      # ===========================
+      # 2️⃣ Log in to Azure
+      # ===========================
       - name: Log in to Azure
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-          # This line installs the Az PowerShell module
           enable-AzPSSession: true 
 
+      # ===========================
+      # 3️⃣ Setup Terraform
+      # ===========================
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
 
-      - name: Clear local Terraform cache and Lock File
+      - name: Clear Terraform Cache and Lock
         run: |
-          echo "Removing .terraform directory..."
           rm -rf .terraform
-          echo "Removing .terraform.lock.hcl file..."
           rm -f .terraform.lock.hcl
-      
-      # The "Unlock and Clean State File" step has been removed
 
+      # ===========================
+      # 4️⃣ Terraform Init + Plan + Apply
+      # ===========================
       - name: Terraform Init
         run: terraform init
 
@@ -47,43 +54,35 @@ jobs:
         timeout-minutes: 90
         run: terraform apply -auto-approve tfplan
 
-      #
-      # --- THIS IS THE 100% POWERSHELL STEP (FIXED) ---
-      #
-      - name: Configure SQL Server (PowerShell Method)
+      # ===========================
+      # 5️⃣ Configure SQL Database inside the VM
+      # ===========================
+      - name: Configure SQL Server Database
         if: success()
         env:
-          SQL_ADMIN_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
-          SQL_APP_PASS: ${{ secrets.APP_SQL_PASSWORD }}
-          SQL_ADMIN_USER: "Volticatstadmin"
-          RG_NAME: "rg-Voltica-tst-vm"
-          VM_NAME: "Volticatstsql"
-        
-        shell: pwsh 
-
+          SQL_ADMIN_USER: "Volticatstadmin"                # VM SQL admin username
+          SQL_ADMIN_PASS: ${{ secrets.VM_ADMIN_PASSWORD }} # Admin password
+          SQL_APP_PASS: ${{ secrets.APP_SQL_PASSWORD }}    # App DB user password
+          RG_NAME: "rg-Voltica-tst-vm"                     # Your Resource Group
+          VM_NAME: "Volticatstsql"                         # Your SQL VM name
+        shell: pwsh
         run: |
-          # --- FIX 1: Install the missing Az.Compute module ---
-          echo "Installing Az.Compute module..."
-          Install-Module -Name Az.Compute -Repository PSGallery -Force -AllowClobber -Scope CurrentUser
-          
-          echo "Starting SQL Server configuration..."
-          
-          # This is the PowerShell script we will run on the VM
+          echo "Starting SQL Database configuration inside VM..."
+
+          # Ensure Az.Compute is available for Invoke-AzVMRunCommand
+          Install-Module -Name Az.Compute -Force -AllowClobber -Scope CurrentUser
+
+          # Define the PowerShell script to run inside the VM
           $scriptBlock = @"
           Write-Host '========================================='
-          Write-Host 'Starting SQL Server Database Configuration'
+          Write-Host '🚀 Starting SQL Server Database Setup'
           Write-Host '========================================='
-          Write-Host 'Admin User: $($env:SQL_ADMIN_USER)'
-          Write-Host ''
-
           try {
-              Write-Host 'Step 1: Installing/Importing SqlServer module...'
-              Install-Module -Name SqlServer -Repository PSGallery -Force -AllowClobber -Scope CurrentUser
-              Import-Module SqlServer -ErrorAction Stop
-              Write-Host '✓ SqlServer module loaded successfully'
-              Write-Host ''
-              
-              Write-Host 'Step 2: Creating database VolticaDB...'
+              Write-Host 'Installing SqlServer module...'
+              Install-Module -Name SqlServer -Force -AllowClobber -Scope CurrentUser
+              Import-Module SqlServer
+
+              Write-Host 'Step 1: Create database VolticaDB...'
               \$createDbQuery = "
                 IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'VolticaDB')
                 BEGIN
@@ -95,12 +94,10 @@ jobs:
                     SELECT 'Database VolticaDB already exists' AS Result;
                 END
               "
-              # --- FIX 2: Added -Password parameter ---
-              \$dbResult = Invoke-Sqlcmd -Query \$createDbQuery -ServerInstance 'localhost' -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)"
+              \$dbResult = Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$($env:SQL_ADMIN_USER)' -Password '$($env:SQL_ADMIN_PASS)' -Query \$createDbQuery
               Write-Host \$dbResult.Result
-              Write-Host ''
-              
-              Write-Host 'Step 3: Creating login voltica_app_user...'
+
+              Write-Host 'Step 2: Create login voltica_app_user...'
               \$createLoginQuery = "
                 IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = N'voltica_app_user')
                 BEGIN
@@ -112,95 +109,96 @@ jobs:
                     SELECT 'Login voltica_app_user already exists' AS Result;
                 END
               "
-              # --- FIX 2: Added -Password parameter ---
-              \$loginResult = Invoke-Sqlcmd -Query \$createLoginQuery -ServerInstance 'localhost' -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)"
+              \$loginResult = Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$($env:SQL_ADMIN_USER)' -Password '$($env:SQL_ADMIN_PASS)' -Query \$createLoginQuery
               Write-Host \$loginResult.Result
-              Write-Host ''
-              
-              Write-Host 'Step 4: Creating database user and assigning permissions...'
+
+              Write-Host 'Step 3: Create DB user and assign permissions...'
               \$createUserQuery = "
                 USE VolticaDB;
                 IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = N'voltica_app_user')
                 BEGIN
                     CREATE USER voltica_app_user FOR LOGIN voltica_app_user;
                     ALTER ROLE db_owner ADD MEMBER voltica_app_user;
-                    SELECT 'User voltica_app_user created and added to db_owner role' AS Result;
+                    SELECT 'User voltica_app_user created and added to db_owner' AS Result;
                 END
                 ELSE
                 BEGIN
                     SELECT 'User voltica_app_user already exists' AS Result;
                 END
               "
-              # --- FIX 2: Added -Password parameter ---
-              \$userResult = Invoke-Sqlcmd -Query \$createUserQuery -ServerInstance 'localhost' -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)"
+              \$userResult = Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$($env:SQL_ADMIN_USER)' -Password '$($env:SQL_ADMIN_PASS)' -Query \$createUserQuery
               Write-Host \$userResult.Result
-              Write-Host ''
-              
+
+              Write-Host 'Step 4: Seed sample data into VolticaDB...'
+              \$seedDataQuery = "
+                USE VolticaDB;
+                IF OBJECT_ID('dbo.AppLogs', 'U') IS NULL
+                BEGIN
+                    CREATE TABLE dbo.AppLogs (
+                        LogId INT IDENTITY(1,1) PRIMARY KEY,
+                        Message NVARCHAR(255),
+                        CreatedAt DATETIME DEFAULT GETDATE()
+                    );
+                    INSERT INTO dbo.AppLogs (Message) VALUES ('Database initialized'), ('Seed data inserted successfully');
+                    SELECT '✅ Table AppLogs created and data seeded' AS Result;
+                END
+                ELSE
+                BEGIN
+                    INSERT INTO dbo.AppLogs (Message) VALUES ('Database reconfigured successfully');
+                    SELECT 'ℹ️ Table AppLogs already exists, inserted new log entry' AS Result;
+                END
+              "
+              \$seedResult = Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$($env:SQL_ADMIN_USER)' -Password '$($env:SQL_ADMIN_PASS)' -Query \$seedDataQuery
+              Write-Host \$seedResult.Result
+
               Write-Host '========================================='
-              Write-Host '✅ SQL configuration completed successfully!'
+              Write-Host '✅ SQL Database configuration completed successfully!'
               Write-Host '========================================='
           }
           catch {
-              Write-Host ''
-              Write-Host '========================================='
-              Write-Host '❌ SQL CONFIGURATION FAILED'
-              Write-Host '========================================='
-              Write-Host "Error Message: `n\$($_.Exception.Message)"
-              Write-Host "Stack Trace: `n\$($_.ScriptStackTrace)"
-              Write-Host '========================================='
+              Write-Host '❌ Error: ' \$_.Exception.Message
               exit 1
           }
           "@
-          
-          # 3. Send the script to the VM using the PowerShell-native command
-          echo "Sending configuration script to VM: $env:VM_NAME in RG: $env:RG_NAME"
+
+          # Execute inside the SQL VM
           Invoke-AzVMRunCommand `
             -ResourceGroupName $env:RG_NAME `
             -VMName $env:VM_NAME `
             -CommandId 'RunPowerShellScript' `
             -ScriptString $scriptBlock
 
-      #
-      # --- THIS IS YOUR DYNAMIC ZAPIER TRIGGER STEP ---
-      #
+      # ===========================
+      # 6️⃣ Trigger Zapier Webhook (post-deploy)
+      # ===========================
       - name: Trigger Post-Deployment Automation
-        if: success()  # Only run if deployment and DB script succeed
+        if: success()
         env:
           ZAPIER_WEBHOOK_URL: ${{ secrets.ZAPIER_WEBHOOK_URL }}
           RG_NAME: "rg-Voltica-tst-vm"
           VM_NAME: "Volticatstsql"
         shell: bash
         run: |
-          # Wait 30 seconds for Azure API to be consistent
-          echo "Waiting 30 seconds for Azure API to stabilize..."
+          echo "Waiting 30 seconds for Azure to stabilize..."
           sleep 30
-          
-          echo "Gathering dynamic data for Zapier..."
-          
-          # --- Get Dynamic Data ---
-          PROJECT_NAME="${{ github.event.repository.name }}"
+
+          echo "Collecting VM public IP..."
           NIC_ID=$(az vm show -g $RG_NAME -n $VM_NAME --query "networkProfile.networkInterfaces[0].id" -o tsv)
           PIP_ID=$(az network nic show --ids $NIC_ID --query "ipConfigurations[0].publicIpAddress.id" -o tsv)
           VM_PUBLIC_IP=$(az network public-ip show --ids $PIP_ID --query "ipAddress" -o tsv)
-          VM_URL="http://$VM_PUBLIC_IP" # Set the URL to the IP address
+          VM_URL="http://$VM_PUBLIC_IP"
 
-          echo "Dynamic Data Found: IP=$VM_PUBLIC_IP, URL=$VM_URL"
-
-          # --- Create the JSON payload *using your requested format* ---
           JSON_PAYLOAD=$(cat <<EOF
           {
-            "projectName": "$PROJECT_NAME",
-            "appServiceUrl": "$VM_URL", 
+            "projectName": "${{ github.event.repository.name }}",
+            "appServiceUrl": "$VM_URL",
             "appServiceIp": "$VM_PUBLIC_IP",
             "ownerEmail": "irfanmd2579@gmail.com"
           }
           EOF
           )
-          
-          # Send the webhook
-          echo "Sending payload to Zapier:"
-          echo $JSON_PAYLOAD
-          
+
+          echo "Sending webhook to Zapier..."
           curl -X POST "$ZAPIER_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -d "$JSON_PAYLOAD"
