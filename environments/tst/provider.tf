@@ -4,10 +4,11 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 3.90.0"
     }
-    # --- ADD THIS NEW BLOCK ---
     sendgrid = {
+      # --- THIS IS THE FIX ---
+      # This is the correct, short path
       source  = "sendgrid/sendgrid"
-      version = "~> 0.2.1" # Use the latest version
+      version = "~> 0.2.1"
     }
   }
 }
@@ -16,7 +17,6 @@ provider "azurerm" {
   features {}
 }
 
-# --- ADD THIS NEW PROVIDER CONFIG ---
 provider "sendgrid" {
   api_key = var.sendgrid_api_key
 }
