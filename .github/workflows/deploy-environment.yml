@@ -6,7 +6,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
+    
     defaults:
       run:
         working-directory: ./environments/tst
@@ -24,21 +24,25 @@ jobs:
         uses: hashicorp/setup-terraform@v2
 
       - name: Clear local Terraform cache and Lock File
-        # This step is critical to fix provider errors
         run: |
           echo "Removing .terraform directory..."
           rm -rf .terraform
           echo "Removing .terraform.lock.hcl file..."
           rm -f .terraform.lock.hcl
-
-      # The complex "Unlock and Clean State File" step has been removed.
-
+      
+      #
+      # --- THIS IS THE NEW STEP ---
+      # This will print the contents of your provider.tf file to the log.
+      - name: Verify Provider File
+        run: |
+          echo "Verifying contents of provider.tf:"
+          cat provider.tf
+      
       - name: Terraform Init (with Upgrade)
-        # This will now succeed because the provider.tf is fixed
         run: terraform init -upgrade
 
       - name: Terraform Plan
-        
+        timeout-minutes: 30
         env:
           TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
           TF_VAR_sendgrid_api_key: ${{ secrets.SENDGRID_API_KEY }}
@@ -46,5 +50,5 @@ jobs:
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
-        
+        timeout-minutes: 90
         run: terraform apply -auto-approve tfplan
