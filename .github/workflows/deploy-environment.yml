@@ -15,14 +15,11 @@ jobs:
       - name: Check out the repository code
         uses: actions/checkout@v3
 
-      #
-      # --- THIS STEP IS THE FIX ---
-      #
       - name: Log in to Azure
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-          # This line installs the Az PowerShell module (which has Invoke-AzVMRunCommand)
+          # This is still needed for authentication
           enable-AzPSSession: true 
 
       - name: Setup Terraform
@@ -51,7 +48,7 @@ jobs:
         run: terraform apply -auto-approve tfplan
 
       #
-      # --- THIS STEP WILL NOW SUCCEED ---
+      # --- THIS STEP IS NOW FIXED ---
       #
       - name: Configure SQL Server (PowerShell Method)
         if: success()
@@ -65,6 +62,11 @@ jobs:
         shell: pwsh 
 
         run: |
+          # --- THIS IS THE FIX ---
+          # Install the specific Az module that contains the 'Invoke-AzVMRunCommand'
+          echo "Installing Az.Compute module..."
+          Install-Module -Name Az.Compute -Repository PSGallery -Force -AllowClobber -Scope CurrentUser
+          
           echo "Starting SQL Server configuration..."
           
           # This is the PowerShell script we will run on the VM
