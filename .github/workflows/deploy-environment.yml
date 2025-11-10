@@ -57,7 +57,7 @@ jobs:
         run: terraform init -upgrade
 
       - name: Terraform Plan
-        timeout-minutes: 30
+        
         env:
           TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
           TF_VAR_sendgrid_api_key: ${{ secrets.SENDGRID_API_KEY }}
@@ -65,5 +65,5 @@ jobs:
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
-        timeout-minutes: 90
+        
         run: terraform apply -auto-approve tfplan
