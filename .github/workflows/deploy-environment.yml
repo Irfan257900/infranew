@@ -30,9 +30,8 @@ jobs:
           echo "Removing .terraform.lock.hcl file..."
           rm -f .terraform.lock.hcl
       
-      #
-      # The "Unlock and Clean State File" step has been DELETED.
-      #
+      # The "Unlock and Clean State File" step has been removed
+      # to allow for correct updates.
 
       - name: Terraform Init
         run: terraform init
@@ -62,9 +61,8 @@ jobs:
           RG_NAME: "rg-Voltica-tst-vm"
           VM_NAME: "Volticatstsql"
         
-        # --- THIS IS THE FIX ---
-        shell: pwsh
-        # --- THIS TELLS GITHUB TO RUN THIS STEP USING POWERSHELL ---
+        # This tells GitHub to run this step using PowerShell
+        shell: pwsh 
 
         run: |
           echo "Starting SQL Server configuration..."
@@ -102,9 +100,10 @@ jobs:
           "@
           
           # 3. Send this PowerShell script to the correct VM using Azure CLI
+          #    --- This block is fixed to use PowerShell ` backticks ---
           echo "Sending configuration script to VM: $VM_NAME in RG: $RG_NAME"
-          az vm run-command invoke \
-            --resource-group "$RG_NAME" \
-            --name "$VM_NAME" \
-            --command-id "RunPowerShellScript" \
+          az vm run-command invoke `
+            --resource-group "$RG_NAME" `
+            --name "$VM_NAME" `
+            --command-id "RunPowerShellScript" `
             --scripts "$scriptBlock"
