@@ -94,7 +94,6 @@ jobs:
           Write-Host 'SQL Server configuration complete.'
           "@
           
-          # --- THIS IS THE NEW FIX ---
           # 1. Save the script to a temporary file
           echo $scriptBlock | Out-File -FilePath "./db_setup.ps1" -Encoding utf8
           
@@ -107,4 +106,4 @@ jobs:
             --resource-group "$env:RG_NAME" `
             --name "$env:VM_NAME" `
             --command-id "RunPowerShellScript" `
-            --scripts $scriptContent # We pass the variable content, not the file path
+            --scripts "$scriptContent" # <-- THIS IS THE FIX (added quotes)
