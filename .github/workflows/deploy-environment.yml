@@ -46,9 +46,9 @@ jobs:
         run: terraform apply -auto-approve tfplan
 
       #
-      # --- THIS IS THE NEW, FIXED STEP ---
+      # --- THIS IS THE NEW, FIXED STEP (USING 100% POWERSHELL) ---
       #
-      - name: Create and Run SQL Database Script
+      - name: Configure SQL Server (PowerShell Method)
         if: success()
         env:
           SQL_ADMIN_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
@@ -57,25 +57,23 @@ jobs:
           RG_NAME: "rg-Voltica-tst-vm"
           VM_NAME: "Volticatstsql"
         
-        # This step runs in the default BASH shell
-        shell: bash 
-        
+        shell: pwsh 
+
         run: |
-          echo "Creating SQL script file..."
+          echo "Starting SQL Server configuration..."
           
-          # 1. Use 'cat' to create the PowerShell script file.
-          #    This is more reliable than PowerShell's Out-File.
-          #    We are injecting the secret values directly into the file.
-          cat << EOF > ./db_setup.ps1
+          # This is the PowerShell script we will run on the VM
+          $scriptBlock = @"
           Write-Host 'Connecting to SQL Server...'
           
+          # 1. Define the T-SQL commands
           \$sqlScript = "
           -- Create the new database
           CREATE DATABASE VolticaDB;
           GO
           
           -- Create the new SQL login
-          CREATE LOGIN voltica_app_user WITH PASSWORD = '${SQL_APP_PASS}';
+          CREATE LOGIN voltica_app_user WITH PASSWORD = '$($env:SQL_APP_PASS)';
           GO
           
           -- Switch to the new database
@@ -91,17 +89,15 @@ jobs:
           GO
           "
           
-          # Run the T-SQL commands using the VM's internal tools
-          Invoke-Sqlcmd -Query \$sqlScript -Username "${SQL_ADMIN_USER}" -Password "${SQL_ADMIN_PASS}" -ServerInstance "localhost"
+          # 2. Run the T-SQL commands using the VM's internal tools
+          Invoke-Sqlcmd -Query \$sqlScript -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)" -ServerInstance "localhost"
           Write-Host 'SQL Server configuration complete.'
-          EOF
+          "@
           
-          echo "SQL script file created."
-          
-          # 2. Send the script file to the VM using the Bash '@' syntax
-          echo "Sending configuration script file to VM: $VM_NAME in RG: $RG_NAME"
-          az vm run-command invoke \
-            --resource-group "$RG_NAME" \
-            --name "$VM_NAME" \
-            --command-id "RunPowerShellScript" \
-            --scripts @./db_setup.ps1
+          # 3. Send the script to the VM using the PowerShell-native command
+          echo "Sending configuration script to VM: $env:VM_NAME in RG: $env:RG_NAME"
+          Invoke-AzVMRunCommand `
+            -ResourceGroupName $env:RG_NAME `
+            -VMName $env:VM_NAME `
+            -CommandId 'RunPowerShellScript' `
+            -ScriptString $scriptBlock
