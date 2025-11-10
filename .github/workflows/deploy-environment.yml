@@ -19,6 +19,8 @@ jobs:
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+          # This line installs the Az PowerShell module
+          enable-AzPSSession: true 
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
@@ -45,7 +47,10 @@ jobs:
         timeout-minutes: 90
         run: terraform apply -auto-approve tfplan
 
-      - name: Create and Run SQL Database Script
+      #
+      # --- THIS IS THE 100% POWERSHELL STEP ---
+      #
+      - name: Configure SQL Server (PowerShell Method)
         if: success()
         env:
           SQL_ADMIN_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
@@ -53,104 +58,154 @@ jobs:
           SQL_ADMIN_USER: "Volticatstadmin"
           RG_NAME: "rg-Voltica-tst-vm"
           VM_NAME: "Volticatstsql"
-        shell: bash 
+        
+        shell: pwsh 
+
         run: |
-          echo "Creating PowerShell script file..."
+          echo "Starting SQL Server configuration..."
           
-          # 1. Create the PowerShell script content
-          cat > db_setup.ps1 <<'EOFSCRIPT'
-          param(
-              [Parameter(Mandatory=$true)][string]$SqlAdminUser,
-              [Parameter(Mandatory=$true)][string]$SqlAdminPass,
-              [Parameter(Mandatory=$true)][string]$SqlAppPass
-          )
-          
-          Write-Host "Starting SQL configuration..."
-          Write-Host "Admin User: $SqlAdminUser"
-          
-          $sql = @"
-          IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'VolticaDB')
-          BEGIN
-              CREATE DATABASE VolticaDB;
-              PRINT 'Database VolticaDB created.';
-          END
-          ELSE
-          BEGIN
-              PRINT 'Database VolticaDB already exists.';
-          END
-          
-          IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = N'voltica_app_user')
-          BEGIN
-              CREATE LOGIN voltica_app_user WITH PASSWORD = '$SqlAppPass';
-              PRINT 'Login voltica_app_user created.';
-          END
-          ELSE
-          BEGIN
-              PRINT 'Login voltica_app_user already exists.';
-          END
-          
-          USE VolticaDB;
-          
-          IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = N'voltica_app_user')
-          BEGIN
-              CREATE USER voltica_app_user FOR LOGIN voltica_app_user;
-              ALTER ROLE db_owner ADD MEMBER voltica_app_user;
-              PRINT 'User voltica_app_user created and added to db_owner role.';
-          END
-          ELSE
-          BEGIN
-              PRINT 'User voltica_app_user already exists.';
-          END
-          "@
-          
+          # This is the PowerShell script we will run on the VM
+          $scriptBlock = @"
+          Write-Host '========================================='
+          Write-Host 'Starting SQL Server Database Configuration'
+          Write-Host '========================================='
+          Write-Host 'Admin User: $($env:SQL_ADMIN_USER)'
+          Write-Host ''
+
           try {
-              Write-Host "Importing SqlServer module..."
+              Write-Host 'Step 1: Importing SqlServer module...'
               Import-Module SqlServer -ErrorAction Stop
+              Write-Host '✓ SqlServer module loaded successfully'
+              Write-Host ''
               
-              Write-Host "Executing SQL commands..."
-              Invoke-Sqlcmd -Query $sql -ServerInstance "localhost" -Username $SqlAdminUser -Password $SqlAdminPass -Verbose
+              Write-Host 'Step 2: Creating database VolticaDB...'
+              \$createDbQuery = "
+                IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'VolticaDB')
+                BEGIN
+                    CREATE DATABASE VolticaDB;
+                    SELECT 'Database VolticaDB created successfully' AS Result;
+                END
+                ELSE
+                BEGIN
+                    SELECT 'Database VolticaDB already exists' AS Result;
+                END
+              "
+              \$dbResult = Invoke-Sqlcmd -Query \$createDbQuery -ServerInstance 'localhost' -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)"
+              Write-Host \$dbResult.Result
+              Write-Host ''
               
-              Write-Host "✅ SQL configuration completed successfully."
-              exit 0
+              Write-Host 'Step 3: Creating login voltica_app_user...'
+              \$createLoginQuery = "
+                IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = N'voltica_app_user')
+                BEGIN
+                    CREATE LOGIN voltica_app_user WITH PASSWORD = '$($env:SQL_APP_PASS)';
+                    SELECT 'Login voltica_app_user created successfully' AS Result;
+                END
+                ELSE
+                BEGIN
+                    SELECT 'Login voltica_app_user already exists' AS Result;
+                END
+              "
+              \$loginResult = Invoke-Sqlcmd -Query \$createLoginQuery -ServerInstance 'localhost' -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)"
+              Write-Host \$loginResult.Result
+              Write-Host ''
+              
+              Write-Host 'Step 4: Creating database user and assigning permissions...'
+              \$createUserQuery = "
+                USE VolticaDB;
+                IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = N'voltica_app_user')
+                BEGIN
+                    CREATE USER voltica_app_user FOR LOGIN voltica_app_user;
+                    ALTER ROLE db_owner ADD MEMBER voltica_app_user;
+                    SELECT 'User voltica_app_user created and added to db_owner role' AS Result;
+                END
+                ELSE
+                BEGIN
+                    SELECT 'User voltica_app_user already exists' AS Result;
+                END
+              "
+              \$userResult = Invoke-Sqlcmd -Query \$createUserQuery -ServerInstance 'localhost' -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)"
+              Write-Host \$userResult.Result
+              Write-Host ''
+              
+              Write-Host '========================================='
+              Write-Host '✅ SQL configuration completed successfully!'
+              Write-Host '========================================='
           }
           catch {
-              Write-Host "❌ SQL configuration failed: $($_.Exception.Message)"
-              Write-Host "Stack Trace: $($_.Exception.StackTrace)"
+              Write-Host ''
+              Write-Host '========================================='
+              Write-Host '❌ SQL CONFIGURATION FAILED'
+              Write-Host '========================================='
+              Write-Host "Error Message: `n\$($_.Exception.Message)"
+              Write-Host "Stack Trace: `n\$($_.ScriptStackTrace)"
+              Write-Host '========================================='
               exit 1
           }
-          EOFSCRIPT
+          "@
           
-          echo "Script created successfully"
-          
-          # 1. Read the script content from the file into a new variable
-          echo "Reading script content into variable..."
-          script_content=$(cat db_setup.ps1)
-
-          echo "Executing script on remote VM..."
-          
-          # 2. Pass the script content as a variable (in quotes)
-          az vm run-command invoke \
-            --resource-group "$RG_NAME" \
-            --name "$VM_NAME" \
-            --command-id RunPowerShellScript \
-            --scripts "$script_content" \
-            --parameters "SqlAdminUser=${SQL_ADMIN_USER}" "SqlAdminPass=${SQL_ADMIN_PASS}" "SqlAppPass=${SQL_APP_PASS}"
-          
-          echo "Script execution completed"
+          # 3. Send the script to the VM using the PowerShell-native command
+          echo "Sending configuration script to VM: $env:VM_NAME in RG: $env:RG_NAME"
+          Invoke-AzVMRunCommand `
+            -ResourceGroupName $env:RG_NAME `
+            -VMName $env:VM_NAME `
+            -CommandId 'RunPowerShellScript' `
+            -ScriptString $scriptBlock
 
       #
-      # --- THIS IS YOUR NEW ZAPIER TRIGGER STEP ---
+      # --- THIS IS YOUR NEW DYNAMIC ZAPIER TRIGGER STEP ---
       #
       - name: Trigger Post-Deployment Automation
         if: success()  # Only run if deployment and DB script succeed
         env:
           ZAPIER_WEBHOOK_URL: ${{ secrets.ZAPIER_WEBHOOK_URL }}
+          RG_NAME: "rg-Voltica-tst-vm"
+          VM_NAME: "Volticatstsql"
+        shell: bash
         run: |
+          echo "Gathering dynamic data for Zapier..."
+          
+          # Get Project Name and User from GitHub
+          PROJECT_NAME="${{ github.event.repository.name }}"
+          TRIGGERING_USER="${{ github.actor }}"
+          
+          # Get the VM's Network Interface (NIC) ID
+          NIC_ID=$(az vm show -g $RG_NAME -n $VM_NAME --query "networkProfile.networkInterfaces[0].id" -o tsv)
+          
+          # Get the Public IP ID from the NIC
+          PIP_ID=$(az network nic show --ids $NIC_ID --query "ipConfigurations[0].publicIpAddress.id" -o tsv)
+          
+          # Get the actual IP address from the Public IP resource
+          VM_PUBLIC_IP=$(az network public-ip show --ids $PIP_ID --query "ipAddress" -o tsv)
+          
+          # Get the VM's Fully Qualified Domain Name (if it has one, otherwise it's blank)
+          VM_FQDN=$(az network public-ip show --ids $PIP_ID --query "dnsSettings.fqdn" -o tsv)
+
+          # Use the FQDN if it exists, otherwise use the IP
+          if [ -z "$VM_FQDN" ]; then
+            VM_URL="http://$VM_PUBLIC_IP"
+          else
+            VM_URL="http://$VM_FQDN"
+          fi
+
+          echo "Dynamic Data Found: IP=$VM_PUBLIC_IP, URL=$VM_URL"
+
+          # Create the JSON payload
+          JSON_PAYLOAD=$(cat <<EOF
+          {
+            "projectName": "$PROJECT_NAME",
+            "triggeringUser": "$TRIGGERING_USER",
+            "vmUrl": "$VM_URL", 
+            "vmIp": "$VM_PUBLIC_IP",
+            "ownerEmail": "irfanmd2579@gmail.com"
+          }
+          EOF
+          )
+          
+          # Send the webhook
+          echo "Sending payload to Zapier:"
+          echo $JSON_PAYLOAD
+          
           curl -X POST "$ZAPIER_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
-            -d '{
-              "projectName": "${{ github.event.repository.name }}",
-              "appServiceUrl": "paybase-prd.azurewebsites.net", 
-              "appServiceIp": "20.10.5.120",
-              "ownerEmail": "irfanmd2579@gmail.com"
-            }'
+            -d "$JSON_PAYLOAD"
