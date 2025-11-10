@@ -1,54 +1,4 @@
-name: Deploy TST Environment
-
-on:
-  workflow_dispatch:
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    
-    defaults:
-      run:
-        working-directory: ./environments/tst
-
-    steps:
-      - name: Check out the repository code
-        uses: actions/checkout@v3
-
-      - name: Log in to Azure
-        uses: azure/login@v1
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-
-      - name: Clear local Terraform cache and Lock File
-        run: |
-          echo "Removing .terraform directory..."
-          rm -rf .terraform
-          echo "Removing .terraform.lock.hcl file..."
-          rm -f .terraform.lock.hcl
-      
-      # The "Unlock and Clean State File" step has been removed
-
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Terraform Plan
-        timeout-minutes: 30
-        env:
-          TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
-        run: terraform plan -out=tfplan
-
-      - name: Terraform Apply
-        timeout-minutes: 90
-        run: terraform apply -auto-approve tfplan
-
-      #
-      # --- THIS IS THE NEW, FIXED STEP (USING 100% POWERSHELL) ---
-      #
-      - name: Configure SQL Server (PowerShell Method)
+- name: Create and Run SQL Database Script
         if: success()
         env:
           SQL_ADMIN_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
@@ -56,48 +6,61 @@ jobs:
           SQL_ADMIN_USER: "Volticatstadmin"
           RG_NAME: "rg-Voltica-tst-vm"
           VM_NAME: "Volticatstsql"
-        
-        shell: pwsh 
-
+        shell: bash 
         run: |
-          echo "Starting SQL Server configuration..."
-          
-          # This is the PowerShell script we will run on the VM
-          $scriptBlock = @"
-          Write-Host 'Connecting to SQL Server...'
-          
-          # 1. Define the T-SQL commands
-          \$sqlScript = "
-          -- Create the new database
-          CREATE DATABASE VolticaDB;
+          echo "Creating PowerShell script to configure SQL..."
+
+          # Create the PowerShell script file safely
+          cat > db_setup.ps1 <<'EOF'
+          param(
+              [string]$SqlAdminUser,
+              [string]$SqlAdminPass,
+              [string]$SqlAppPass
+          )
+
+          Write-Host "Connecting to SQL Server..."
+
+          $sql = @"
+          IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'VolticaDB')
+          BEGIN
+              CREATE DATABASE VolticaDB;
+          END
           GO
-          
-          -- Create the new SQL login
-          CREATE LOGIN voltica_app_user WITH PASSWORD = '$($env:SQL_APP_PASS)';
+
+          IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = N'voltica_app_user')
+          BEGIN
+              CREATE LOGIN voltica_app_user WITH PASSWORD = '$SqlAppPass';
+          END
           GO
-          
-          -- Switch to the new database
+
           USE VolticaDB;
           GO
-          
-          -- Create a user in the database for that login
-          CREATE USER voltica_app_user FOR LOGIN voltica_app_user;
+
+          IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = N'voltica_app_user')
+          BEGIN
+              CREATE USER voltica_app_user FOR LOGIN voltica_app_user;
+              ALTER ROLE db_owner ADD MEMBER voltica_app_user;
+          END
           GO
-          
-          -- Give the new user full ownership of the database
-          ALTER ROLE db_owner ADD MEMBER voltica_app_user;
-          GO
-          "
-          
-          # 2. Run the T-SQL commands using the VM's internal tools
-          Invoke-Sqlcmd -Query \$sqlScript -Username "$($env:SQL_ADMIN_USER)" -Password "$($env:SQL_ADMIN_PASS)" -ServerInstance "localhost"
-          Write-Host 'SQL Server configuration complete.'
           "@
-          
-          # 3. Send the script to the VM using the PowerShell-native command
-          echo "Sending configuration script to VM: $env:VM_NAME in RG: $env:RG_NAME"
-          Invoke-AzVMRunCommand `
-            -ResourceGroupName $env:RG_NAME `
-            -VMName $env:VM_NAME `
-            -CommandId 'RunPowerShellScript' `
-            -ScriptString $scriptBlock
+
+          try {
+              Import-Module SqlServer -ErrorAction Stop
+              Invoke-Sqlcmd -Query $sql -ServerInstance "localhost" -Username $SqlAdminUser -Password $SqlAdminPass
+              Write-Host "✅ SQL configuration completed successfully."
+          }
+          catch {
+              Write-Host "❌ SQL configuration failed: $($_.Exception.Message)"
+              exit 1
+          }
+          EOF
+
+          echo "Script created successfully. Executing remotely..."
+
+          # Run the PowerShell script on the SQL VM
+          az vm run-command invoke \
+            --resource-group "$RG_NAME" \
+            --name "$VM_NAME" \
+            --command-id RunPowerShellScript \
+            --scripts "@$(pwd)/db_setup.ps1" \
+            --parameters "SqlAdminUser=${SQL_ADMIN_USER}" "SqlAdminPass=${SQL_ADMIN_PASS}" "SqlAppPass=${SQL_APP_PASS}"
