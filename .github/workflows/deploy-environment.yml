@@ -1,138 +1,150 @@
-name: Deploy TST Environment
-
-on:
-  workflow_dispatch:
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
+- name: Create and Run SQL Database Script
+  if: success()
+  env:
+    SQL_ADMIN_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
+    SQL_APP_PASS: ${{ secrets.APP_SQL_PASSWORD }}
+    SQL_ADMIN_USER: "Volticatstadmin"
+    RG_NAME: "rg-Voltica-tst-vm"
+    VM_NAME: "Volticatstsql"
+  shell: bash
+  run: |
+    echo "Executing SQL configuration on remote VM..."
     
-    defaults:
-      run:
-        working-directory: ./environments/tst
-
-    steps:
-      - name: Check out the repository code
-        uses: actions/checkout@v3
-
-      - name: Log in to Azure
-        uses: azure/login@v1
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-
-      - name: Clear local Terraform cache and Lock File
-        run: |
-          echo "Removing .terraform directory..."
-          rm -rf .terraform
-          echo "Removing .terraform.lock.hcl file..."
-          rm -f .terraform.lock.hcl
-      
-      # The "Unlock and Clean State File" step has been removed
-
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Terraform Plan
-        timeout-minutes: 30
-        env:
-          TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
-        run: terraform plan -out=tfplan
-
-      - name: Terraform Apply
-        timeout-minutes: 90
-        run: terraform apply -auto-approve tfplan
-
-      #
-      # --- THIS IS YOUR NEW, CORRECT STEP ---
-      #
-      - name: Create and Run SQL Database Script
-        if: success()
-        env:
-          SQL_ADMIN_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
-          SQL_APP_PASS: ${{ secrets.APP_SQL_PASSWORD }}
-          SQL_ADMIN_USER: "Volticatstadmin"
-          RG_NAME: "rg-Voltica-tst-vm"
-          VM_NAME: "Volticatstsql"
-        shell: bash 
-        run: |
-          echo "Creating PowerShell script to configure SQL..."
-
-          # Create the PowerShell script content
-          cat > db_setup.ps1 <<'EOFSCRIPT'
-          param(
-              [string]$SqlAdminUser,
-              [string]$SqlAdminPass,
-              [string]$SqlAppPass
-          )
+    az vm run-command invoke \
+      --resource-group "$RG_NAME" \
+      --name "$VM_NAME" \
+      --command-id RunPowerShellScript \
+      --scripts "
+        param(
+          [Parameter(Mandatory=\$true)][string]\$SqlAdminUser,
+          [Parameter(Mandatory=\$true)][string]\$SqlAdminPass,
+          [Parameter(Mandatory=\$true)][string]\$SqlAppPass
+        )
+        
+        Write-Host '========================================='
+        Write-Host 'Starting SQL Server Database Configuration'
+        Write-Host '========================================='
+        Write-Host 'Admin User:' \$SqlAdminUser
+        Write-Host ''
+        
+        try {
+          Write-Host 'Step 1: Importing SqlServer module...'
+          Import-Module SqlServer -ErrorAction Stop
+          Write-Host '✓ SqlServer module loaded successfully'
+          Write-Host ''
           
-          Write-Host "Starting SQL configuration..."
-          Write-Host "Admin User: $SqlAdminUser"
-          
-          $sql = @"
-          IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'VolticaDB')
-          BEGIN
+          Write-Host 'Step 2: Creating database VolticaDB...'
+          \$createDbQuery = \"
+            IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'VolticaDB')
+            BEGIN
               CREATE DATABASE VolticaDB;
-              PRINT 'Database VolticaDB created.';
-          END
-          ELSE
-          BEGIN
-              PRINT 'Database VolticaDB already exists.';
-          END
+              SELECT 'Database VolticaDB created successfully' AS Result;
+            END
+            ELSE
+            BEGIN
+              SELECT 'Database VolticaDB already exists' AS Result;
+            END
+          \"
+          \$dbResult = Invoke-Sqlcmd -Query \$createDbQuery -ServerInstance 'localhost' -Username \$SqlAdminUser -Password \$SqlAdminPass
+          Write-Host \$dbResult.Result
+          Write-Host ''
           
-          IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = N'voltica_app_user')
-          BEGIN
-              CREATE LOGIN voltica_app_user WITH PASSWORD = '$SqlAppPass';
-              PRINT 'Login voltica_app_user created.';
-          END
-          ELSE
-          BEGIN
-              PRINT 'Login voltica_app_user already exists.';
-          END
+          Write-Host 'Step 3: Creating login voltica_app_user...'
+          \$createLoginQuery = \"
+            IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = N'voltica_app_user')
+            BEGIN
+              CREATE LOGIN voltica_app_user WITH PASSWORD = '\$SqlAppPass';
+              SELECT 'Login voltica_app_user created successfully' AS Result;
+            END
+            ELSE
+            BEGIN
+              SELECT 'Login voltica_app_user already exists' AS Result;
+            END
+          \"
+          \$loginResult = Invoke-Sqlcmd -Query \$createLoginQuery -ServerInstance 'localhost' -Username \$SqlAdminUser -Password \$SqlAdminPass
+          Write-Host \$loginResult.Result
+          Write-Host ''
           
-          USE VolticaDB;
-          
-          IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = N'voltica_app_user')
-          BEGIN
+          Write-Host 'Step 4: Creating database user and assigning permissions...'
+          \$createUserQuery = \"
+            USE VolticaDB;
+            IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = N'voltica_app_user')
+            BEGIN
               CREATE USER voltica_app_user FOR LOGIN voltica_app_user;
               ALTER ROLE db_owner ADD MEMBER voltica_app_user;
-              PRINT 'User voltica_app_user created and added to db_owner role.';
-          END
-          ELSE
-          BEGIN
-              PRINT 'User voltica_app_user already exists.';
-          END
-          "@
+              SELECT 'User voltica_app_user created and added to db_owner role' AS Result;
+            END
+            ELSE
+            BEGIN
+              SELECT 'User voltica_app_user already exists' AS Result;
+            END
+          \"
+          \$userResult = Invoke-Sqlcmd -Query \$createUserQuery -ServerInstance 'localhost' -Username \$SqlAdminUser -Password \$SqlAdminPass
+          Write-Host \$userResult.Result
+          Write-Host ''
           
-          try {
-              Write-Host "Importing SqlServer module..."
-              Import-Module SqlServer -ErrorAction Stop
-              
-              Write-Host "Executing SQL commands..."
-              Invoke-Sqlcmd -Query $sql -ServerInstance "localhost" -Username $SqlAdminUser -Password $SqlAdminPass -Verbose
-              
-              Write-Host "✅ SQL configuration completed successfully."
-              exit 0
-          }
-          catch {
-              Write-Host "❌ SQL configuration failed: $($_.Exception.Message)"
-              Write-Host "Stack Trace: $($_.Exception.StackTrace)"
-              exit 1
-          }
-          EOFSCRIPT
+          Write-Host '========================================='
+          Write-Host '✅ SQL configuration completed successfully!'
+          Write-Host '========================================='
+          Write-Host 'Database: VolticaDB'
+          Write-Host 'App User: voltica_app_user'
+          Write-Host 'Permissions: db_owner'
+          Write-Host '========================================='
           
-          echo "Script created. Contents:"
-          cat db_setup.ps1
-          
-          echo ""
-          echo "Executing script on remote VM..."
-          
-          # Execute using the script content directly
-          az vm run-command invoke \
-            --resource-group "$RG_NAME" \
-            --name "$VM_NAME" \
-            --command-id RunPowerShellScript \
-            --scripts "@$(pwd)/db_setup.ps1" \
-            --parameters "SqlAdminUser=${SQL_ADMIN_USER}" "SqlAdminPass=${SQL_ADMIN_PASS}" "SqlAppPass=${SQL_APP_PASS}"
+          exit 0
+        }
+        catch {
+          Write-Host ''
+          Write-Host '========================================='
+          Write-Host '❌ SQL CONFIGURATION FAILED'
+          Write-Host '========================================='
+          Write-Host 'Error Message:' \$_.Exception.Message
+          Write-Host 'Error Details:' \$_.Exception
+          Write-Host 'Stack Trace:' \$_.ScriptStackTrace
+          Write-Host '========================================='
+          exit 1
+        }
+      " \
+      --parameters "SqlAdminUser=${SQL_ADMIN_USER}" "SqlAdminPass=${SQL_ADMIN_PASS}" "SqlAppPass=${SQL_APP_PASS}"
+    
+    echo ""
+    echo "SQL configuration command sent to VM"
+```
+
+## Key Features:
+
+1. **Inline script** - No file creation issues
+2. **Step-by-step execution** - Each SQL operation is separate for better error handling
+3. **Detailed logging** - Clear output showing what's happening
+4. **Proper error handling** - Catches and displays errors clearly
+5. **Escaped variables** - All PowerShell variables properly escaped with `\$`
+6. **Result feedback** - Each step returns a message confirming success
+
+## Expected Output:
+
+When successful, you'll see:
+```
+=========================================
+Starting SQL Server Database Configuration
+=========================================
+Admin User: Volticatstadmin
+
+Step 1: Importing SqlServer module...
+✓ SqlServer module loaded successfully
+
+Step 2: Creating database VolticaDB...
+Database VolticaDB created successfully
+
+Step 3: Creating login voltica_app_user...
+Login voltica_app_user created successfully
+
+Step 4: Creating database user and assigning permissions...
+User voltica_app_user created and added to db_owner role
+
+=========================================
+✅ SQL configuration completed successfully!
+=========================================
+Database: VolticaDB
+App User: voltica_app_user
+Permissions: db_owner
+=========================================
