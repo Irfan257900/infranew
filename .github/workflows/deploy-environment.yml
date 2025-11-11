@@ -1,56 +1,59 @@
-name: Deploy Azure VM and Configure SQL
+name: Deploy Azure VM, Configure SQL, and Notify Zapier
 
 on:
   workflow_dispatch:
 
-permissions:
-  id-token: write
-  contents: read
-
 env:
   RG_NAME: rg-Voltica-tst-vm
   VM_NAME: Volticatstsql
-  SQL_ADMIN_USER: Volticatstadmin
+  PROJECT_NAME: infranew
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
+      # Step 1: Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Log in to Azure
+      # Step 2: Setup Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      # Step 3: Azure Login
+      - name: Azure Login
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.8.5
+      # Step 4: Terraform Init
+      - name: Terraform Init
+        run: terraform init
 
-      - name: Terraform Init & Apply
-        run: |
-          echo "Deploying Azure infrastructure..."
-          terraform init
-          terraform apply -auto-approve
+      # Step 5: Terraform Validate
+      - name: Terraform Validate
+        run: terraform validate
 
-      - name: Enable System Assigned Identity on VM
-        run: |
-          echo "Enabling system-assigned managed identity on VM..."
-          az vm identity assign -g $RG_NAME -n $VM_NAME
+      # Step 6: Terraform Plan
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
 
-      - name: Wait for VM identity to be ready
-        run: |
-          echo "Waiting for VM identity to propagate..."
-          sleep 60
+      # Step 7: Terraform Apply
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
 
-      - name: Configure SQL Database inside VM
+      # Step 8: Configure SQL Server on VM
+      - name: Configure SQL Server on Azure VM
         shell: pwsh
         env:
+          SQL_ADMIN_USER: Volticatstadmin
           SQL_ADMIN_PASS: ${{ secrets.SQL_ADMIN_PASS }}
           SQL_APP_PASS: ${{ secrets.SQL_APP_PASS }}
+          RG_NAME: ${{ env.RG_NAME }}
+          VM_NAME: ${{ env.VM_NAME }}
         run: |
           echo "=== Starting SQL setup on $env:VM_NAME in $env:RG_NAME ==="
 
@@ -58,7 +61,12 @@ jobs:
           Install-Module -Name Az.Compute -Force -AllowClobber -Scope CurrentUser
           Import-Module Az.Compute
 
-          Connect-AzAccount -Identity -ErrorAction SilentlyContinue | Out-Null
+          # Try connecting using managed identity if available
+          try {
+            Connect-AzAccount -Identity -ErrorAction Stop | Out-Null
+          } catch {
+            Write-Host "⚠️ Managed Identity not available, skipping MI login."
+          }
 
           $scriptBlock = @"
           try {
@@ -95,7 +103,7 @@ jobs:
               "@
               Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$env:SQL_ADMIN_USER' -Password '$env:SQL_ADMIN_PASS' -Query \$createUserQuery
 
-              # Seed data
+              # Seed sample data
               \$seedQuery = @"
                 USE VolticaDB;
                 IF OBJECT_ID('dbo.AppLogs', 'U') IS NULL
@@ -135,8 +143,7 @@ jobs:
                     -CommandId 'RunPowerShellScript' `
                     -ScriptString $scriptBlock
                   $success = $true
-              }
-              catch {
+              } catch {
                   if ($_.Exception.Message -like "*Run command extension execution is in progress*") {
                       Write-Host "⚠️ RunCommand busy — retrying in 30s ($attempt/$maxAttempts)"
                       Start-Sleep -Seconds 30
@@ -153,33 +160,48 @@ jobs:
               exit 1
           }
 
-      - name: Send Deployment Info to Zapier
+      # Step 9: Fetch VM IP and Notify Zapier
+      - name: Get VM Public IP and Send to Zapier
+        shell: bash
+        env:
+          ZAPIER_WEBHOOK_URL: ${{ secrets.ZAPIER_WEBHOOK_URL }}
+          RG_NAME: ${{ env.RG_NAME }}
+          VM_NAME: ${{ env.VM_NAME }}
+          PROJECT_NAME: ${{ env.PROJECT_NAME }}
         run: |
-          echo "Waiting 30 seconds for Azure API to stabilize..."
-          sleep 30
+          echo "Waiting 60 seconds for Azure API to stabilize..."
+          sleep 60
 
-          NIC_ID=$(az vm show -g $RG_NAME -n $VM_NAME --query "networkProfile.networkInterfaces[0].id" -o tsv)
-          if [ -z "$NIC_ID" ]; then
-            echo "❌ NIC ID not found for VM"
+          echo "Fetching NIC ID..."
+          NIC_ID=$(az vm show -g "$RG_NAME" -n "$VM_NAME" --query "networkProfile.networkInterfaces[0].id" -o tsv)
+
+          echo "Fetching Public IP ID..."
+          for i in {1..10}; do
+            PIP_ID=$(az network nic show --ids "$NIC_ID" --query "ipConfigurations[0].publicIpAddress.id" -o tsv)
+            if [[ -n "$PIP_ID" ]]; then
+              break
+            fi
+            echo "Public IP not ready yet (attempt $i)... waiting 10s..."
+            sleep 10
+          done
+
+          if [[ -z "$PIP_ID" ]]; then
+            echo "❌ Failed to fetch Public IP after multiple attempts."
             exit 1
           fi
 
-          PIP_ID=$(az network nic show --ids $NIC_ID --query "ipConfigurations[0].publicIpAddress.id" -o tsv)
-          if [ -z "$PIP_ID" ]; then
-            echo "❌ Public IP ID not found for VM"
+          echo "Fetching VM Public IP..."
+          VM_PUBLIC_IP=$(az network public-ip show --ids "$PIP_ID" --query "ipAddress" -o tsv)
+
+          if [[ -z "$VM_PUBLIC_IP" ]]; then
+            echo "❌ Could not retrieve Public IP Address."
             exit 1
           fi
 
-          VM_PUBLIC_IP=$(az network public-ip show --ids $PIP_ID --query "ipAddress" -o tsv)
-          if [ -z "$VM_PUBLIC_IP" ]; then
-            echo "❌ Failed to get VM public IP"
-            exit 1
-          fi
-
-          echo "Detected VM IP: $VM_PUBLIC_IP"
-          PROJECT_NAME="infranew"
+          echo "✅ Detected Public IP: $VM_PUBLIC_IP"
           VM_URL="http://$VM_PUBLIC_IP"
 
+          echo "Building JSON payload..."
           JSON_PAYLOAD=$(jq -n \
             --arg projectName "$PROJECT_NAME" \
             --arg appServiceUrl "$VM_URL" \
@@ -187,8 +209,9 @@ jobs:
             --arg ownerEmail "irfanmd2579@gmail.com" \
             '{projectName:$projectName, appServiceUrl:$appServiceUrl, appServiceIp:$appServiceIp, ownerEmail:$ownerEmail}')
 
+          echo "Sending data to Zapier webhook..."
           curl -X POST "$ZAPIER_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -d "$JSON_PAYLOAD"
-        env:
-          ZAPIER_WEBHOOK_URL: ${{ secrets.ZAPIER_WEBHOOK_URL }}
+
+          echo "✅ Successfully sent VM details to Zapier!"
