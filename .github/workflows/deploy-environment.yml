@@ -9,7 +9,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: ./environments/tst   # 👈 change this if your .tf files are elsewhere
+        working-directory: ./environments/tst
 
     steps:
       - name: Check out the repository code
@@ -26,22 +26,18 @@ jobs:
 
       - name: Clear local Terraform cache and Lock File
         run: |
-          echo "Removing .terraform directory..."
           rm -rf .terraform
-          echo "Removing .terraform.lock.hcl file..."
           rm -f .terraform.lock.hcl
 
       - name: Terraform Init
         run: terraform init
 
       - name: Terraform Plan
-        timeout-minutes: 30
         env:
           TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
-        timeout-minutes: 90
         run: terraform apply -auto-approve tfplan
 
       - name: Wait for VM to be ready
@@ -60,7 +56,6 @@ jobs:
         shell: pwsh
         run: |
           echo "=== Starting SQL Database configuration inside VM ==="
-
           Install-Module -Name Az.Compute -Force -AllowClobber -Scope CurrentUser
 
           $scriptBlock = @"
@@ -73,52 +68,16 @@ jobs:
               Import-Module SqlServer
 
               Write-Host 'Step 1: Create database VolticaDB...'
-              \$createDbQuery = @"
-                IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'VolticaDB')
-                BEGIN
-                    CREATE DATABASE VolticaDB;
-                END
-              "@
-              Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$($env:SQL_ADMIN_USER)' -Password '$($env:SQL_ADMIN_PASS)' -Query \$createDbQuery
+              Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$($env:SQL_ADMIN_USER)' -Password '$($env:SQL_ADMIN_PASS)' -Query "IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'VolticaDB') BEGIN CREATE DATABASE VolticaDB; END"
 
               Write-Host 'Step 2: Create login voltica_app_user...'
-              \$createLoginQuery = @"
-                IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = N'voltica_app_user')
-                BEGIN
-                    CREATE LOGIN voltica_app_user WITH PASSWORD = '$($env:SQL_APP_PASS)';
-                END
-              "@
-              Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$($env:SQL_ADMIN_USER)' -Password '$($env:SQL_ADMIN_PASS)' -Query \$createLoginQuery
+              Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$($env:SQL_ADMIN_USER)' -Password '$($env:SQL_ADMIN_PASS)' -Query "IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = N'voltica_app_user') BEGIN CREATE LOGIN voltica_app_user WITH PASSWORD = '$($env:SQL_APP_PASS)'; END"
 
               Write-Host 'Step 3: Create DB user and assign permissions...'
-              \$createUserQuery = @"
-                USE VolticaDB;
-                IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = N'voltica_app_user')
-                BEGIN
-                    CREATE USER voltica_app_user FOR LOGIN voltica_app_user;
-                    ALTER ROLE db_owner ADD MEMBER voltica_app_user;
-                END
-              "@
-              Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$($env:SQL_ADMIN_USER)' -Password '$($env:SQL_ADMIN_PASS)' -Query \$createUserQuery
+              Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$($env:SQL_ADMIN_USER)' -Password '$($env:SQL_ADMIN_PASS)' -Query "USE VolticaDB; IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = N'voltica_app_user') BEGIN CREATE USER voltica_app_user FOR LOGIN voltica_app_user; ALTER ROLE db_owner ADD MEMBER voltica_app_user; END"
 
               Write-Host 'Step 4: Seed sample data...'
-              \$seedQuery = @"
-                USE VolticaDB;
-                IF OBJECT_ID('dbo.AppLogs', 'U') IS NULL
-                BEGIN
-                    CREATE TABLE dbo.AppLogs (
-                        LogId INT IDENTITY(1,1) PRIMARY KEY,
-                        Message NVARCHAR(255),
-                        CreatedAt DATETIME DEFAULT GETDATE()
-                    );
-                    INSERT INTO dbo.AppLogs (Message) VALUES ('Database initialized');
-                END
-                ELSE
-                BEGIN
-                    INSERT INTO dbo.AppLogs (Message) VALUES ('Reconfiguration completed');
-                END
-              "@
-              Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$($env:SQL_ADMIN_USER)' -Password '$($env:SQL_ADMIN_PASS)' -Query \$seedQuery
+              Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$($env:SQL_ADMIN_USER)' -Password '$($env:SQL_ADMIN_PASS)' -Query "USE VolticaDB; IF OBJECT_ID('dbo.AppLogs', 'U') IS NULL BEGIN CREATE TABLE dbo.AppLogs (LogId INT IDENTITY(1,1) PRIMARY KEY, Message NVARCHAR(255), CreatedAt DATETIME DEFAULT GETDATE()); INSERT INTO dbo.AppLogs (Message) VALUES ('Database initialized'); END ELSE BEGIN INSERT INTO dbo.AppLogs (Message) VALUES ('Reconfiguration completed'); END"
 
               Write-Host '✅ SQL configuration complete!'
           }
@@ -170,13 +129,19 @@ jobs:
         run: |
           echo "Waiting 30 seconds for Azure API to stabilize..."
           sleep 30
-          
+
           echo "Gathering dynamic data for Zapier..."
-          
           PROJECT_NAME="${{ github.event.repository.name }}"
-          NIC_ID=$(az vm show -g $RG_NAME -n $VM_NAME --query "networkProfile.networkInterfaces[0].id" -o tsv)
-          PIP_ID=$(az network nic show --ids $NIC_ID --query "ipConfigurations[0].publicIpAddress.id" -o tsv)
-          VM_PUBLIC_IP=$(az network public-ip show --ids $PIP_ID --query "ipAddress" -o tsv)
+
+          NIC_ID=$(az vm show -g "$RG_NAME" -n "$VM_NAME" --query "networkProfile.networkInterfaces[0].id" -o tsv)
+          PIP_ID=$(az network nic show --ids "$NIC_ID" --query "ipConfigurations[0].publicIpAddress.id" -o tsv)
+
+          if [ -z "$PIP_ID" ]; then
+            echo "❌ No public IP attached to VM — skipping Zapier call."
+            exit 0
+          fi
+
+          VM_PUBLIC_IP=$(az network public-ip show --ids "$PIP_ID" --query "ipAddress" -o tsv)
           VM_URL="http://$VM_PUBLIC_IP"
 
           echo "Dynamic Data Found: IP=$VM_PUBLIC_IP, URL=$VM_URL"
@@ -184,7 +149,7 @@ jobs:
           JSON_PAYLOAD=$(cat <<EOF
           {
             "projectName": "$PROJECT_NAME",
-            "appServiceUrl": "$VM_URL", 
+            "appServiceUrl": "$VM_URL",
             "appServiceIp": "$VM_PUBLIC_IP",
             "ownerEmail": "irfanmd2579@gmail.com"
           }
