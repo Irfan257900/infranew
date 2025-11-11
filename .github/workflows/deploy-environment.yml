@@ -29,7 +29,7 @@ jobs:
 
       - name: Deploying Azure infrastructure...
         run: |
-          cd terraform      # 👈 Make sure this matches your folder name
+          echo "Starting Terraform apply..."
           terraform init
           terraform apply -auto-approve
         env:
@@ -42,14 +42,25 @@ jobs:
           echo "Waiting 30 seconds for Azure API to stabilize..."
           sleep 30
 
+          echo "Fetching NIC and Public IP..."
           NIC_ID=$(az vm show -g $RG_NAME -n $VM_NAME --query "networkProfile.networkInterfaces[0].id" -o tsv)
           echo "NIC ID: $NIC_ID"
+
+          if [ -z "$NIC_ID" ]; then
+            echo "❌ NIC ID not found — VM may not have finished provisioning."
+            exit 1
+          fi
 
           PIP_ID=$(az network nic show --ids $NIC_ID --query "ipConfigurations[0].publicIpAddress.id" -o tsv)
           echo "Public IP ID: $PIP_ID"
 
+          if [ -z "$PIP_ID" ]; then
+            echo "❌ Public IP not attached to NIC."
+            exit 1
+          fi
+
           VM_PUBLIC_IP=$(az network public-ip show --ids $PIP_ID --query "ipAddress" -o tsv)
-          echo "Detected IP: $VM_PUBLIC_IP"
+          echo "✅ Detected IP: $VM_PUBLIC_IP"
 
           VM_URL="http://$VM_PUBLIC_IP"
           JSON_PAYLOAD=$(jq -n \
@@ -59,6 +70,7 @@ jobs:
             --arg ownerEmail "irfanmd2579@gmail.com" \
             '{projectName:$projectName, appServiceUrl:$appServiceUrl, appServiceIp:$appServiceIp, ownerEmail:$ownerEmail}')
 
+          echo "Sending payload to Zapier..."
           curl -X POST "$ZAPIER_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -d "$JSON_PAYLOAD"
@@ -70,7 +82,6 @@ jobs:
 
       - name: Configure SQL Server via PowerShell
         run: |
-          cd terraform
           echo "Creating PowerShell script for SQL configuration..."
           cat > db_setup.ps1 <<'EOF'
           param(
@@ -90,7 +101,7 @@ jobs:
           sqlcmd -S localhost -U $SqlAdminUser -P $SqlAdminPass -Q $query
           EOF
 
-          echo "Uploading db_setup.ps1 to VM..."
+          echo "Running SQL setup script remotely on VM..."
           az vm run-command invoke \
             --command-id RunPowerShellScript \
             --name $VM_NAME \
