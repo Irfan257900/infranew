@@ -1,217 +1,50 @@
-name: Deploy Azure VM, Configure SQL, and Notify Zapier
+name: Deploy TST Environment
 
 on:
   workflow_dispatch:
 
-env:
-  RG_NAME: rg-Voltica-tst-vm
-  VM_NAME: Volticatstsql
-  PROJECT_NAME: infranew
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: ./environments/tst
 
     steps:
-      # Step 1: Checkout
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Check out the repository code
+        uses: actions/checkout@v3
 
-      # Step 2: Setup Terraform
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.9.8
-
-      # Step 3: Azure Login
-      - name: Azure Login
-        uses: azure/login@v2
+      - name: Log in to Azure
+        uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+          # This line installs the Az PowerShell module
+          enable-AzPSSession: true 
 
-      # Step 4: Terraform Init
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+
+      - name: Clear local Terraform cache and Lock File
+        run: |
+          echo "Removing .terraform directory..."
+          rm -rf .terraform
+          echo "Removing .terraform.lock.hcl file..."
+          rm -f .terraform.lock.hcl
+      
+      # The "Unlock and Clean State File" step has been removed
+
       - name: Terraform Init
         run: terraform init
 
-      # Step 5: Terraform Validate
-      - name: Terraform Validate
-        run: terraform validate
-
-      # Step 6: Terraform Plan
       - name: Terraform Plan
+        timeout-minutes: 30
+        env:
+          TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
         run: terraform plan -out=tfplan
 
-      # Step 7: Terraform Apply
       - name: Terraform Apply
+        timeout-minutes: 90
         run: terraform apply -auto-approve tfplan
 
-      # Step 8: Configure SQL Server on VM
-      - name: Configure SQL Server on Azure VM
-        shell: pwsh
-        env:
-          SQL_ADMIN_USER: Volticatstadmin
-          SQL_ADMIN_PASS: ${{ secrets.SQL_ADMIN_PASS }}
-          SQL_APP_PASS: ${{ secrets.SQL_APP_PASS }}
-          RG_NAME: ${{ env.RG_NAME }}
-          VM_NAME: ${{ env.VM_NAME }}
-        run: |
-          echo "=== Starting SQL setup on $env:VM_NAME in $env:RG_NAME ==="
-
-          Install-Module -Name Az.Accounts -Force -AllowClobber -Scope CurrentUser
-          Install-Module -Name Az.Compute -Force -AllowClobber -Scope CurrentUser
-          Import-Module Az.Compute
-
-          # Try connecting using managed identity if available
-          try {
-            Connect-AzAccount -Identity -ErrorAction Stop | Out-Null
-          } catch {
-            Write-Host "⚠️ Managed Identity not available, skipping MI login."
-          }
-
-          $scriptBlock = @"
-          try {
-              Write-Host '🚀 Starting SQL configuration on VM...'
-              Install-Module SqlServer -Force -AllowClobber -Scope CurrentUser
-              Import-Module SqlServer
-
-              # Create database
-              \$createDbQuery = @"
-                IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'VolticaDB')
-                BEGIN
-                    CREATE DATABASE VolticaDB;
-                END
-              "@
-              Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$env:SQL_ADMIN_USER' -Password '$env:SQL_ADMIN_PASS' -Query \$createDbQuery
-
-              # Create login
-              \$createLoginQuery = @"
-                IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = N'voltica_app_user')
-                BEGIN
-                    CREATE LOGIN voltica_app_user WITH PASSWORD = '$env:SQL_APP_PASS';
-                END
-              "@
-              Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$env:SQL_ADMIN_USER' -Password '$env:SQL_ADMIN_PASS' -Query \$createLoginQuery
-
-              # Create DB user and assign permissions
-              \$createUserQuery = @"
-                USE VolticaDB;
-                IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = N'voltica_app_user')
-                BEGIN
-                    CREATE USER voltica_app_user FOR LOGIN voltica_app_user;
-                    ALTER ROLE db_owner ADD MEMBER voltica_app_user;
-                END
-              "@
-              Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$env:SQL_ADMIN_USER' -Password '$env:SQL_ADMIN_PASS' -Query \$createUserQuery
-
-              # Seed sample data
-              \$seedQuery = @"
-                USE VolticaDB;
-                IF OBJECT_ID('dbo.AppLogs', 'U') IS NULL
-                BEGIN
-                    CREATE TABLE dbo.AppLogs (
-                        LogId INT IDENTITY(1,1) PRIMARY KEY,
-                        Message NVARCHAR(255),
-                        CreatedAt DATETIME DEFAULT GETDATE()
-                    );
-                    INSERT INTO dbo.AppLogs (Message) VALUES ('Database initialized');
-                END
-                ELSE
-                BEGIN
-                    INSERT INTO dbo.AppLogs (Message) VALUES ('Reconfiguration completed');
-                END
-              "@
-              Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$env:SQL_ADMIN_USER' -Password '$env:SQL_ADMIN_PASS' -Query \$seedQuery
-
-              Write-Host '✅ SQL configuration completed successfully!'
-          }
-          catch {
-              Write-Host "❌ Error in SQL setup: $($_.Exception.Message)"
-              exit 1
-          }
-          "@
-
-          $maxAttempts = 10
-          $attempt = 1
-          $success = $false
-
-          while (-not $success -and $attempt -le $maxAttempts) {
-              Write-Host "Attempt $attempt to run SQL setup..."
-              try {
-                  Invoke-AzVMRunCommand `
-                    -ResourceGroupName $env:RG_NAME `
-                    -VMName $env:VM_NAME `
-                    -CommandId 'RunPowerShellScript' `
-                    -ScriptString $scriptBlock
-                  $success = $true
-              } catch {
-                  if ($_.Exception.Message -like "*Run command extension execution is in progress*") {
-                      Write-Host "⚠️ RunCommand busy — retrying in 30s ($attempt/$maxAttempts)"
-                      Start-Sleep -Seconds 30
-                      $attempt++
-                  } else {
-                      Write-Host "❌ Unexpected error: $($_.Exception.Message)"
-                      exit 1
-                  }
-              }
-          }
-
-          if (-not $success) {
-              Write-Host "❌ SQL setup failed after $maxAttempts attempts"
-              exit 1
-          }
-
-      # Step 9: Fetch VM IP and Notify Zapier
-      - name: Get VM Public IP and Send to Zapier
-        shell: bash
-        env:
-          ZAPIER_WEBHOOK_URL: ${{ secrets.ZAPIER_WEBHOOK_URL }}
-          RG_NAME: ${{ env.RG_NAME }}
-          VM_NAME: ${{ env.VM_NAME }}
-          PROJECT_NAME: ${{ env.PROJECT_NAME }}
-        run: |
-          echo "Waiting 60 seconds for Azure API to stabilize..."
-          sleep 60
-
-          echo "Fetching NIC ID..."
-          NIC_ID=$(az vm show -g "$RG_NAME" -n "$VM_NAME" --query "networkProfile.networkInterfaces[0].id" -o tsv)
-
-          echo "Fetching Public IP ID..."
-          for i in {1..10}; do
-            PIP_ID=$(az network nic show --ids "$NIC_ID" --query "ipConfigurations[0].publicIpAddress.id" -o tsv)
-            if [[ -n "$PIP_ID" ]]; then
-              break
-            fi
-            echo "Public IP not ready yet (attempt $i)... waiting 10s..."
-            sleep 10
-          done
-
-          if [[ -z "$PIP_ID" ]]; then
-            echo "❌ Failed to fetch Public IP after multiple attempts."
-            exit 1
-          fi
-
-          echo "Fetching VM Public IP..."
-          VM_PUBLIC_IP=$(az network public-ip show --ids "$PIP_ID" --query "ipAddress" -o tsv)
-
-          if [[ -z "$VM_PUBLIC_IP" ]]; then
-            echo "❌ Could not retrieve Public IP Address."
-            exit 1
-          fi
-
-          echo "✅ Detected Public IP: $VM_PUBLIC_IP"
-          VM_URL="http://$VM_PUBLIC_IP"
-
-          echo "Building JSON payload..."
-          JSON_PAYLOAD=$(jq -n \
-            --arg projectName "$PROJECT_NAME" \
-            --arg appServiceUrl "$VM_URL" \
-            --arg appServiceIp "$VM_PUBLIC_IP" \
-            --arg ownerEmail "irfanmd2579@gmail.com" \
-            '{projectName:$projectName, appServiceUrl:$appServiceUrl, appServiceIp:$appServiceIp, ownerEmail:$ownerEmail}')
-
-          echo "Sending data to Zapier webhook..."
-          curl -X POST "$ZAPIER_WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
-            -d "$JSON_PAYLOAD"
-
-          echo "✅ Successfully sent VM details to Zapier!"
+      # All steps after this have been removed.
