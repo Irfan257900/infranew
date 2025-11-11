@@ -1,4 +1,4 @@
-name: Deploy Azure VM + SQL Setup
+name: Deploy Azure VM and Configure SQL
 
 on:
   workflow_dispatch:
@@ -20,97 +20,82 @@ jobs:
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.9.5
+          terraform_version: 1.8.5
 
-      - name: Log in to Azure
+      - name: Azure Login
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Deploying Azure infrastructure...
-        run: |
-          echo "Starting Terraform apply..."
-          terraform init
-          terraform apply -auto-approve
+      - name: Initialize Terraform
+        working-directory: ./terraform
+        run: terraform init
+
+      - name: Validate Terraform
+        working-directory: ./terraform
+        run: terraform validate
+
+      - name: Apply Terraform
+        working-directory: ./terraform
+        run: terraform apply -auto-approve
+
+      # ================================
+      # CONFIGURE SQL INSIDE VM
+      # ================================
+      - name: Configure SQL Database inside VM
+        shell: pwsh
         env:
           RG_NAME: ${{ env.RG_NAME }}
           VM_NAME: ${{ env.VM_NAME }}
           SQL_ADMIN_USER: ${{ env.SQL_ADMIN_USER }}
-
-      - name: Wait for Azure API to stabilize and send IP to Zapier
+          SQL_ADMIN_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
+          SQL_APP_PASS: ${{ secrets.APP_SQL_PASSWORD }}
         run: |
-          echo "Waiting 30 seconds for Azure API to stabilize..."
-          sleep 30
+          echo "=== Starting SQL Database configuration inside VM ==="
 
-          echo "Fetching NIC and Public IP..."
-          NIC_ID=$(az vm show -g $RG_NAME -n $VM_NAME --query "networkProfile.networkInterfaces[0].id" -o tsv)
-          echo "NIC ID: $NIC_ID"
-
-          if [ -z "$NIC_ID" ]; then
-            echo "❌ NIC ID not found — VM may not have finished provisioning."
-            exit 1
-          fi
-
-          PIP_ID=$(az network nic show --ids $NIC_ID --query "ipConfigurations[0].publicIpAddress.id" -o tsv)
-          echo "Public IP ID: $PIP_ID"
-
-          if [ -z "$PIP_ID" ]; then
-            echo "❌ Public IP not attached to NIC."
-            exit 1
-          fi
-
-          VM_PUBLIC_IP=$(az network public-ip show --ids $PIP_ID --query "ipAddress" -o tsv)
-          echo "✅ Detected IP: $VM_PUBLIC_IP"
-
-          VM_URL="http://$VM_PUBLIC_IP"
-          JSON_PAYLOAD=$(jq -n \
-            --arg projectName "$PROJECT_NAME" \
-            --arg appServiceUrl "$VM_URL" \
-            --arg appServiceIp "$VM_PUBLIC_IP" \
-            --arg ownerEmail "irfanmd2579@gmail.com" \
-            '{projectName:$projectName, appServiceUrl:$appServiceUrl, appServiceIp:$appServiceIp, ownerEmail:$ownerEmail}')
-
-          echo "Sending payload to Zapier..."
-          curl -X POST "$ZAPIER_WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
-            -d "$JSON_PAYLOAD"
-        env:
-          ZAPIER_WEBHOOK_URL: ${{ secrets.ZAPIER_WEBHOOK_URL }}
-          RG_NAME: ${{ env.RG_NAME }}
-          VM_NAME: ${{ env.VM_NAME }}
-          PROJECT_NAME: ${{ env.PROJECT_NAME }}
-
-      - name: Configure SQL Server via PowerShell
-        run: |
-          echo "Creating PowerShell script for SQL configuration..."
-          cat > db_setup.ps1 <<'EOF'
+          # Create PowerShell script dynamically
+          $script = @"
           param(
-              [string]$SqlAdminUser,
-              [string]$SqlAdminPass,
-              [string]$SqlAppPass
+              [string]\$SqlAdminUser,
+              [string]\$SqlAdminPass,
+              [string]\$SqlAppPass
           )
 
-          Write-Host "Configuring SQL Server user and permissions..."
+          \$ErrorActionPreference = 'Stop'
+          Write-Host '=== Configuring SQL Server... ==='
 
-          $connectionString = "Server=localhost;Database=master;User Id=$SqlAdminUser;Password=$SqlAdminPass;"
-          $query = @"
-          CREATE LOGIN AppLogin WITH PASSWORD = '$SqlAppPass';
-          CREATE USER AppUser FOR LOGIN AppLogin;
-          EXEC sp_addrolemember 'db_owner', 'AppUser';
+          Start-Sleep -Seconds 20
+          Restart-Service -Name 'MSSQLSERVER' -Force
+          Start-Sleep -Seconds 20
+
+          sqlcmd -S localhost -U \$SqlAdminUser -P \$SqlAdminPass -Q "CREATE DATABASE VolticaDB"
+          sqlcmd -S localhost -U \$SqlAdminUser -P \$SqlAdminPass -Q "CREATE LOGIN VolticaApp WITH PASSWORD='\$SqlAppPass', CHECK_POLICY=OFF; CREATE USER VolticaApp FOR LOGIN VolticaApp; ALTER ROLE db_owner ADD MEMBER VolticaApp;"
+
+          Write-Host '✅ SQL setup completed successfully.'
           "@
-          sqlcmd -S localhost -U $SqlAdminUser -P $SqlAdminPass -Q $query
-          EOF
 
-          echo "Running SQL setup script remotely on VM..."
-          az vm run-command invoke \
-            --command-id RunPowerShellScript \
-            --name $VM_NAME \
-            --resource-group $RG_NAME \
-            --scripts "@db_setup.ps1" \
-            --parameters SqlAdminUser=$SQL_ADMIN_USER SqlAdminPass=${{ secrets.SQL_ADMIN_PASS }} SqlAppPass=${{ secrets.SQL_APP_PASS }}
-        env:
-          RG_NAME: ${{ env.RG_NAME }}
-          VM_NAME: ${{ env.VM_NAME }}
-          SQL_ADMIN_USER: ${{ env.SQL_ADMIN_USER }}
-          SQL_ADMIN_PASS: ${{ secrets.SQL_ADMIN_PASS }}
-          SQL_APP_PASS: ${{ secrets.SQL_APP_PASS }}
+          Set-Content -Path "db_setup.ps1" -Value $script -Force
+
+          # Retry logic for VM run-command
+          for ($i = 1; $i -le 10; $i++) {
+            echo "Attempt $i to run SQL setup script on VM..."
+            $result = az vm run-command invoke `
+              --resource-group $env:RG_NAME `
+              --name $env:VM_NAME `
+              --command-id RunPowerShellScript `
+              --scripts @"db_setup.ps1" `
+              --parameters "SqlAdminUser=$env:SQL_ADMIN_USER" "SqlAdminPass=$env:SQL_ADMIN_PASS" "SqlAppPass=$env:SQL_APP_PASS" 2>&1
+
+            if ($LASTEXITCODE -eq 0) {
+              echo "✅ SQL setup completed successfully."
+              break
+            } else {
+              echo "⚠️ VM RunCommand busy — waiting 30s before retry ($i/10)..."
+              Start-Sleep -Seconds 30
+            }
+          }
+
+          if ($LASTEXITCODE -ne 0) {
+            echo "❌ SQL setup failed after 10 attempts — VM still busy."
+            exit 1
+          }
