@@ -3,11 +3,14 @@ name: Deploy Azure VM and Configure SQL
 on:
   workflow_dispatch:
 
+permissions:
+  id-token: write
+  contents: read
+
 env:
   RG_NAME: rg-Voltica-tst-vm
   VM_NAME: Volticatstsql
   SQL_ADMIN_USER: Volticatstadmin
-  PROJECT_NAME: infranew
 
 jobs:
   deploy:
@@ -17,85 +20,175 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.8.5
 
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Terraform Init & Apply
+        run: |
+          echo "Deploying Azure infrastructure..."
+          terraform init
+          terraform apply -auto-approve
 
-      - name: Initialize Terraform
-        working-directory: ./terraform
-        run: terraform init
+      - name: Enable System Assigned Identity on VM
+        run: |
+          echo "Enabling system-assigned managed identity on VM..."
+          az vm identity assign -g $RG_NAME -n $VM_NAME
 
-      - name: Validate Terraform
-        working-directory: ./terraform
-        run: terraform validate
+      - name: Wait for VM identity to be ready
+        run: |
+          echo "Waiting for VM identity to propagate..."
+          sleep 60
 
-      - name: Apply Terraform
-        working-directory: ./terraform
-        run: terraform apply -auto-approve
-
-      # ================================
-      # CONFIGURE SQL INSIDE VM
-      # ================================
       - name: Configure SQL Database inside VM
         shell: pwsh
         env:
-          RG_NAME: ${{ env.RG_NAME }}
-          VM_NAME: ${{ env.VM_NAME }}
-          SQL_ADMIN_USER: ${{ env.SQL_ADMIN_USER }}
-          SQL_ADMIN_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
-          SQL_APP_PASS: ${{ secrets.APP_SQL_PASSWORD }}
+          SQL_ADMIN_PASS: ${{ secrets.SQL_ADMIN_PASS }}
+          SQL_APP_PASS: ${{ secrets.SQL_APP_PASS }}
         run: |
-          echo "=== Starting SQL Database configuration inside VM ==="
+          echo "=== Starting SQL setup on $env:VM_NAME in $env:RG_NAME ==="
 
-          # Create PowerShell script dynamically
-          $script = @"
-          param(
-              [string]\$SqlAdminUser,
-              [string]\$SqlAdminPass,
-              [string]\$SqlAppPass
-          )
+          Install-Module -Name Az.Accounts -Force -AllowClobber -Scope CurrentUser
+          Install-Module -Name Az.Compute -Force -AllowClobber -Scope CurrentUser
+          Import-Module Az.Compute
 
-          \$ErrorActionPreference = 'Stop'
-          Write-Host '=== Configuring SQL Server... ==='
+          Connect-AzAccount -Identity -ErrorAction SilentlyContinue | Out-Null
 
-          Start-Sleep -Seconds 20
-          Restart-Service -Name 'MSSQLSERVER' -Force
-          Start-Sleep -Seconds 20
+          $scriptBlock = @"
+          try {
+              Write-Host '🚀 Starting SQL configuration on VM...'
+              Install-Module SqlServer -Force -AllowClobber -Scope CurrentUser
+              Import-Module SqlServer
 
-          sqlcmd -S localhost -U \$SqlAdminUser -P \$SqlAdminPass -Q "CREATE DATABASE VolticaDB"
-          sqlcmd -S localhost -U \$SqlAdminUser -P \$SqlAdminPass -Q "CREATE LOGIN VolticaApp WITH PASSWORD='\$SqlAppPass', CHECK_POLICY=OFF; CREATE USER VolticaApp FOR LOGIN VolticaApp; ALTER ROLE db_owner ADD MEMBER VolticaApp;"
+              # Create database
+              \$createDbQuery = @"
+                IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'VolticaDB')
+                BEGIN
+                    CREATE DATABASE VolticaDB;
+                END
+              "@
+              Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$env:SQL_ADMIN_USER' -Password '$env:SQL_ADMIN_PASS' -Query \$createDbQuery
 
-          Write-Host '✅ SQL setup completed successfully.'
+              # Create login
+              \$createLoginQuery = @"
+                IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = N'voltica_app_user')
+                BEGIN
+                    CREATE LOGIN voltica_app_user WITH PASSWORD = '$env:SQL_APP_PASS';
+                END
+              "@
+              Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$env:SQL_ADMIN_USER' -Password '$env:SQL_ADMIN_PASS' -Query \$createLoginQuery
+
+              # Create DB user and assign permissions
+              \$createUserQuery = @"
+                USE VolticaDB;
+                IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = N'voltica_app_user')
+                BEGIN
+                    CREATE USER voltica_app_user FOR LOGIN voltica_app_user;
+                    ALTER ROLE db_owner ADD MEMBER voltica_app_user;
+                END
+              "@
+              Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$env:SQL_ADMIN_USER' -Password '$env:SQL_ADMIN_PASS' -Query \$createUserQuery
+
+              # Seed data
+              \$seedQuery = @"
+                USE VolticaDB;
+                IF OBJECT_ID('dbo.AppLogs', 'U') IS NULL
+                BEGIN
+                    CREATE TABLE dbo.AppLogs (
+                        LogId INT IDENTITY(1,1) PRIMARY KEY,
+                        Message NVARCHAR(255),
+                        CreatedAt DATETIME DEFAULT GETDATE()
+                    );
+                    INSERT INTO dbo.AppLogs (Message) VALUES ('Database initialized');
+                END
+                ELSE
+                BEGIN
+                    INSERT INTO dbo.AppLogs (Message) VALUES ('Reconfiguration completed');
+                END
+              "@
+              Invoke-Sqlcmd -ServerInstance 'localhost' -Username '$env:SQL_ADMIN_USER' -Password '$env:SQL_ADMIN_PASS' -Query \$seedQuery
+
+              Write-Host '✅ SQL configuration completed successfully!'
+          }
+          catch {
+              Write-Host "❌ Error in SQL setup: $($_.Exception.Message)"
+              exit 1
+          }
           "@
 
-          Set-Content -Path "db_setup.ps1" -Value $script -Force
+          $maxAttempts = 10
+          $attempt = 1
+          $success = $false
 
-          # Retry logic for VM run-command
-          for ($i = 1; $i -le 10; $i++) {
-            echo "Attempt $i to run SQL setup script on VM..."
-            $result = az vm run-command invoke `
-              --resource-group $env:RG_NAME `
-              --name $env:VM_NAME `
-              --command-id RunPowerShellScript `
-              --scripts @"db_setup.ps1" `
-              --parameters "SqlAdminUser=$env:SQL_ADMIN_USER" "SqlAdminPass=$env:SQL_ADMIN_PASS" "SqlAppPass=$env:SQL_APP_PASS" 2>&1
-
-            if ($LASTEXITCODE -eq 0) {
-              echo "✅ SQL setup completed successfully."
-              break
-            } else {
-              echo "⚠️ VM RunCommand busy — waiting 30s before retry ($i/10)..."
-              Start-Sleep -Seconds 30
-            }
+          while (-not $success -and $attempt -le $maxAttempts) {
+              Write-Host "Attempt $attempt to run SQL setup..."
+              try {
+                  Invoke-AzVMRunCommand `
+                    -ResourceGroupName $env:RG_NAME `
+                    -VMName $env:VM_NAME `
+                    -CommandId 'RunPowerShellScript' `
+                    -ScriptString $scriptBlock
+                  $success = $true
+              }
+              catch {
+                  if ($_.Exception.Message -like "*Run command extension execution is in progress*") {
+                      Write-Host "⚠️ RunCommand busy — retrying in 30s ($attempt/$maxAttempts)"
+                      Start-Sleep -Seconds 30
+                      $attempt++
+                  } else {
+                      Write-Host "❌ Unexpected error: $($_.Exception.Message)"
+                      exit 1
+                  }
+              }
           }
 
-          if ($LASTEXITCODE -ne 0) {
-            echo "❌ SQL setup failed after 10 attempts — VM still busy."
+          if (-not $success) {
+              Write-Host "❌ SQL setup failed after $maxAttempts attempts"
+              exit 1
+          }
+
+      - name: Send Deployment Info to Zapier
+        run: |
+          echo "Waiting 30 seconds for Azure API to stabilize..."
+          sleep 30
+
+          NIC_ID=$(az vm show -g $RG_NAME -n $VM_NAME --query "networkProfile.networkInterfaces[0].id" -o tsv)
+          if [ -z "$NIC_ID" ]; then
+            echo "❌ NIC ID not found for VM"
             exit 1
-          }
+          fi
+
+          PIP_ID=$(az network nic show --ids $NIC_ID --query "ipConfigurations[0].publicIpAddress.id" -o tsv)
+          if [ -z "$PIP_ID" ]; then
+            echo "❌ Public IP ID not found for VM"
+            exit 1
+          fi
+
+          VM_PUBLIC_IP=$(az network public-ip show --ids $PIP_ID --query "ipAddress" -o tsv)
+          if [ -z "$VM_PUBLIC_IP" ]; then
+            echo "❌ Failed to get VM public IP"
+            exit 1
+          fi
+
+          echo "Detected VM IP: $VM_PUBLIC_IP"
+          PROJECT_NAME="infranew"
+          VM_URL="http://$VM_PUBLIC_IP"
+
+          JSON_PAYLOAD=$(jq -n \
+            --arg projectName "$PROJECT_NAME" \
+            --arg appServiceUrl "$VM_URL" \
+            --arg appServiceIp "$VM_PUBLIC_IP" \
+            --arg ownerEmail "irfanmd2579@gmail.com" \
+            '{projectName:$projectName, appServiceUrl:$appServiceUrl, appServiceIp:$appServiceIp, ownerEmail:$ownerEmail}')
+
+          curl -X POST "$ZAPIER_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$JSON_PAYLOAD"
+        env:
+          ZAPIER_WEBHOOK_URL: ${{ secrets.ZAPIER_WEBHOOK_URL }}
