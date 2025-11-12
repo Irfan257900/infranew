@@ -1,13 +1,13 @@
 # --- Resource Group Configuration ---
-app_rg_name    = "rg-Voltica-tst-apps"
-vm_rg_name     = "rg-Voltica-tst-vm"
+app_rg_name    = "rg-Volticademo-tst-apps"
+vm_rg_name     = "rg-Volticademo-tst-vm"
 location       = "Southeast Asia"
 
 # --- Application Services Names ---
-storage_account_name         = "volticastoragetstirfan77" # <-- UPDATED
+storage_account_name         = "volticastoragetstirfan771" # <-- UPDATED
 app_insights_name            = "Voltica-APiUI-insides-tst"
 app_service_plan_name        = "Voltica-tst-Plan"
-service_bus_namespace_name = "Volticapubsubtst-irfan771" # <-- UPDATED
+service_bus_namespace_name = "Volticapubsubtst-irfan7711" # <-- UPDATED
 key_vault_name               = "Voltica-tst-kv-irfan771" # <-- UPDATED
 dotnet_version               = "8.0"
 log_analytics_workspace_name = "log-Voltica-tst-appinsides"
@@ -34,6 +34,7 @@ nsg_name            = "nsg-Voltica-tst-default"
 vm_name             = "Volticatstsql"
 vm_admin_username   = "Volticatstadmin"
 # vm_admin_password is NOT set here. It will be provided via CI/CD.
+
 
 
 
