@@ -1,7 +1,7 @@
 # --- Standardized Tagging Definition & Data ---
 locals {
   env       = "tst"
-  project   = "demo - Voltica"
+  project   = "Voltica"
   common_tags = {
     "Business-owners"     = "Project Manager"
     "Core-function"       = "application"
@@ -119,5 +119,6 @@ module "function_apps" {
   storage_account_access_key     = module.storage_account.primary_access_key
 
 }
+
 
 
